@@ -1615,11 +1615,105 @@ def make_gene_embeddings(monarch_url, gene_prefix, association_prefix, phenotype
         curategpt gene_orthology --monarch_url $URL --hp_collection hp_index --mp_collection mp_index
     """
 
+    """Ask a knowledge source wrapper."""
+    # 1.
+    # if collection not existing RunTime Error, pls load collections first
+    wrapper = KGWrapper()
+    db = ChromaDBAdapter()
+    required_collections = ['ont_hp', "ont_mp"]
+    # this is faster than opening and failing
+    col_list = db.client.list_collections()
+    for collection in required_collections:
+        if collection not in col_list:
+            raise RuntimeError(f"{collection} is required. Please index them first."
+                               f"You need the ont_hp and ont_mp collections to continue")
+    # at this point we're sure the collections are already indexed and accesible
+    ont_hp, ont_mp = db.client.get_collection("ont_hp"), db.client.get_collection("ont_mp")
+    human_gene_to_hps = wrapper.human_gene_to_phenotype
+    mouse_gene_to_mps = wrapper.mouse_gene_to_phenotype
+    ortholgues_genes_set = wrapper.orthologues_genes_human_to_mouse_set
+
+    # 2.
+    def get_human_gene_embeddings(human_gene_to_hp: dict, ont_hp: Collection) -> dict:
+        human_gene_embeddings = {}
+        hp_embeddings = {}
+        col = ont_hp.get(include=['metadatas', 'embeddings'])
+        for embedding, metadata in zip(col.get("embeddings", {}), col.get("metadatas", {})):
+            metadata_json = json.loads(metadata["_json"])
+            hpo_id = metadata_json.get("original_id")
+            if hpo_id:
+                hp_embeddings[hpo_id] = np.array(embedding)
+
+        for gene, hpo_ids in human_gene_to_hp.items():
+            embeddings = np.array([hp_embeddings[hp_id] for hp_id in hpo_ids if hp_id in hp_embeddings])
+
+            if embeddings.size > 0:
+                average_embedding = np.mean(embeddings, axis=0)
+                human_gene_embeddings[gene] = average_embedding
+
+        return human_gene_embeddings
+
+    def get_mouse_gene_embeddings(mouse_gene_to_mps: dict, ont_mp: Collection) -> dict:
+        mouse_gene_embeddings = {}
+        mp_embeddings = {}
+        col = ont_mp.get(include=['metadatas', 'embeddings'])
+        for embedding, metadata in zip(col.get("embeddings", {}), col.get("metadatas", {})):
+            metadata_json = json.loads(metadata["_json"])
+            hpo_id = metadata_json.get("original_id")
+            if hpo_id:
+                mp_embeddings[hpo_id] = embedding
+
+        for gene, mps in mouse_gene_to_mps.items():
+            embeddings = np.array([mp_embeddings[mp] for mp in mps if mp in mp_embeddings])
+
+            if embeddings.size > 0:
+                average_embedding = np.mean(embeddings, axis=0)
+                mouse_gene_embeddings[gene] = average_embedding
+
+        return mouse_gene_embeddings
+
+    # 3.
+    # create new collections
+    # upsert into collections: human and mouse gene_embeddings (averaged embeddings of all hps in a gene)
+    human_gene_embeddings = get_human_gene_embeddings(
+        human_gene_to_hp=human_gene_to_hps,
+        ont_hp=ont_hp
+    )
+
+    mouse_gene_embeddings = get_mouse_gene_embeddings(
+        mouse_gene_to_mps=mouse_gene_to_mps,
+        ont_mp=ont_mp
+    )
+
+    def upsert_human_gene_embeddings(gene_embeddings_dict_human: dict):
+        human_gene_embeddings_collection = db.client.get_or_create_collection("human_gene_embeddings_collection")
+        gene_ids = np.array(list(gene_embeddings_dict_human.keys()), dtype=object)
+        embeddings = np.stack(list(gene_embeddings_dict_human.values()))
+        metadatas = [{"type": "Gene"}] * len(gene_ids)
+        try:
+            human_gene_embeddings_collection.upsert(ids=gene_ids, embeddings=embeddings, metadatas=metadatas)
+        except Exception as e:
+            print(f"Error in upserting human gene embeddings: {e}")
+
+    def upsert_mouse_gene_embeddings(gene_embeddings_dict_mouse: dict):
+        mouse_gene_embeddings_collection = db.client.get_or_create_collection("mouse_gene_embeddings_collection")
+        gene_ids = np.array(list(gene_embeddings_dict_mouse.keys()), dtype=object)
+        embeddings = np.stack(list(mouse_gene_embeddings.values()))
+        metadatas = [{"type": "Gene"}] * len(gene_ids)
+        try:
+            mouse_gene_embeddings_collection.upsert(ids=gene_ids, embeddings=embeddings, metadatas=metadatas)
+        except Exception as e:
+            print(f"Error in upserting mouse gene embeddings: {e}")
+
+    # after this collections are created and ready to use and compare
+    upsert_human_gene_embeddings(human_gene_embeddings)
+    upsert_mouse_gene_embeddings(mouse_gene_embeddings)
+
     # Call an agent to:
-    # download Monarch knowledge graph
-    # extract gene and phenotype associations
-    # generate LLM embeddings for human and mouse genes and phenotypes
-    # write out embeddings to a collection
+    # download Monarch knowledge graph [x]
+    # extract gene and phenotype associations [x]
+    # generate LLM embeddings for human and mouse genes and phenotypes [x]
+    # write out embeddings to a collection [x]
     pass
 
 @click.option("--monarch_url", required=True, default="https://data.monarchinitiative.org/monarch-kg/2024-02-13/monarch-kg.tar.gz", help="URL for the Monarch knowledge graph")
@@ -1629,6 +1723,10 @@ def make_gene_embeddings(monarch_url, gene_prefix, association_prefix, phenotype
 def gene_orthology(monarch_url, collection, gene_prefix, orthology_biolink_type):
     """Compare LLM embeddings for orthologous and non-orthologous genes.
     """
+    # just thoughts:
+    # gene_embeddings = load_gene_embeddings(collection)
+    # orthologous_pairs = extract_orthologous_pairs(monarch_url, gene_prefix, orthology_biolink_type)
+    # compare_embeddings(gene_embeddings, orthologous_pairs, non_orthologous_pairs)
     pass
 
 @main.group()
