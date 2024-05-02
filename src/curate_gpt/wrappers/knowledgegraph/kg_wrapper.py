@@ -13,7 +13,6 @@ from curate_gpt.agents.kg_agent import KGAgent
 from curate_gpt.store import ChromaDBAdapter
 
 
-# pickle for instances
 @dataclass
 class KGWrapper:
     url: Optional[str]

@@ -1,15 +1,13 @@
-import json
 import os
 import random
 import tarfile
 import tempfile
 import time
 from dataclasses import dataclass, field
-from typing import Dict, Tuple, Iterator, List, Optional
+from typing import Tuple, List
 
 import pandas as pd
 import requests
-import wget
 from tqdm import tqdm
 
 CACHE_FILE = "edges_df_cache.parquet"
@@ -76,10 +74,8 @@ class KGAgent:
             self._random_1000_non_orthologous_pairs = self._process_random_1000_non_orthologues_pairs(target_count=1000)
         return self._random_1000_non_orthologous_pairs
 
-    ## TODO THE LIST THING
     def all_genes_and_phenotypes(
             self,
-            # gene_ids: list,
             gene_prefix: str,
             phenotype_prefix: str,
             predicate: str = 'biolink:has_phenotype'
@@ -91,7 +87,6 @@ class KGAgent:
         filtered_df = self._edges_df[self._edges_df['predicate'] == predicate]
         if gene_prefix:
             filtered_df = filtered_df[filtered_df['subject'].str.startswith(gene_prefix)]
-            # filtered_df = filtered_df[filtered_df['subject'].isin(gene_ids)]
         if phenotype_prefix:
             filtered_df = filtered_df[filtered_df['object'].str.startswith(phenotype_prefix)]
         grouped = filtered_df.groupby('subject')['object'].agg(lambda x: list(set(x))).reset_index()
