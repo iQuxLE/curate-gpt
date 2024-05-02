@@ -1,14 +1,19 @@
 """Command line interface for curate-gpt."""
 import csv
+import pickle
+import re
 import gzip
 import json
 import logging
+import random
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Union, Set, Tuple
 
 import click
+import numpy as np
 import pandas as pd
+from chromadb import Collection
 import yaml
 from click_default_group import DefaultGroup
 from linkml_runtime.dumpers import json_dumper
@@ -34,12 +39,17 @@ from curate_gpt.extract.basic_extractor import BasicExtractor
 from curate_gpt.store.schema_proxy import SchemaProxy
 from curate_gpt.utils.vectordb_operations import match_collections
 from curate_gpt.wrappers import BaseWrapper, get_wrapper
+from curate_gpt.wrappers.knowledgegraph.orthology_wrapper import OrthologyHandler
+from curate_gpt.wrappers.knowledgegraph.util import parse_gene_list, validate_gene_list, validate_prefixis, \
+    validate_gene_file, validate_monarch_url, validate_upsert_option
 from curate_gpt.wrappers.literature.pubmed_wrapper import PubmedWrapper
 from curate_gpt.wrappers.ontology import OntologyWrapper
 
 __all__ = [
     "main",
 ]
+
+from src.curate_gpt.wrappers.knowledgegraph.kg_wrapper import KGWrapper, GeneEmbeddingsHandler, EmbeddingAnalyser
 
 
 def dump(obj: Union[str, AnnotatedObject, Dict], format="yaml") -> None:
@@ -198,19 +208,19 @@ def main(verbose: int, quiet: bool):
 @batch_size_option
 @click.argument("files", nargs=-1)
 def index(
-    files,
-    path,
-    append: bool,
-    text_field,
-    collection,
-    model,
-    object_type,
-    description,
-    batch_size,
-    glob,
-    view,
-    collect,
-    **kwargs,
+        files,
+        path,
+        append: bool,
+        text_field,
+        collection,
+        model,
+        object_type,
+        description,
+        batch_size,
+        glob,
+        view,
+        collect,
+        **kwargs,
 ):
     """
     Index files.
@@ -330,16 +340,16 @@ def search(query, path, collection, show_documents, **kwargs):
 )
 @output_format_option
 def all_by_all(
-    path,
-    collection,
-    other_collection,
-    other_path,
-    threshold,
-    ids_only,
-    output_format,
-    left_field,
-    right_field,
-    **kwargs,
+        path,
+        collection,
+        other_collection,
+        other_path,
+        threshold,
+        ids_only,
+        output_format,
+        left_field,
+        right_field,
+        **kwargs,
 ):
     """Match two collections."""
     db = ChromaDBAdapter(path)
@@ -448,17 +458,17 @@ def matches(id, path, collection):
 )
 @click.argument("texts", nargs=-1)
 def annotate(
-    texts,
-    path,
-    model,
-    collection,
-    input_file,
-    split_sentences,
-    category,
-    prefix,
-    identifier_field,
-    label_field,
-    **kwargs,
+        texts,
+        path,
+        model,
+        collection,
+        input_file,
+        split_sentences,
+        category,
+        prefix,
+        identifier_field,
+        label_field,
+        **kwargs,
 ):
     """Concept recognition."""
     db = ChromaDBAdapter(path)
@@ -526,17 +536,17 @@ def annotate(
 @output_format_option
 @click.argument("text", nargs=-1)
 def extract(
-    text,
-    input,
-    path,
-    docstore_path,
-    docstore_collection,
-    conversation,
-    rule: List[str],
-    model,
-    schema,
-    output_format,
-    **kwargs,
+        text,
+        input,
+        path,
+        docstore_path,
+        docstore_collection,
+        conversation,
+        rule: List[str],
+        model,
+        schema,
+        output_format,
+        **kwargs,
 ):
     """Extract a structured object from text.
 
@@ -616,17 +626,17 @@ def extract(
 )
 @click.argument("ids", nargs=-1)
 def extract_from_pubmed(
-    ids,
-    pubmed_id_file,
-    output_directory,
-    path,
-    docstore_path,
-    docstore_collection,
-    conversation,
-    rule: List[str],
-    model,
-    schema,
-    **kwargs,
+        ids,
+        pubmed_id_file,
+        output_directory,
+        path,
+        docstore_path,
+        docstore_collection,
+        conversation,
+        rule: List[str],
+        model,
+        schema,
+        **kwargs,
 ):
     """Extract structured knowledge from a publication using its PubMed ID.
 
@@ -702,17 +712,17 @@ def extract_from_pubmed(
 @output_format_option
 @click.argument("query")
 def complete(
-    query,
-    path,
-    docstore_path,
-    docstore_collection,
-    conversation,
-    rule: List[str],
-    model,
-    query_property,
-    schema,
-    output_format,
-    **kwargs,
+        query,
+        path,
+        docstore_path,
+        docstore_collection,
+        conversation,
+        rule: List[str],
+        model,
+        query_property,
+        schema,
+        output_format,
+        **kwargs,
 ):
     """
     Generate an entry from a query using object completion.
@@ -787,17 +797,17 @@ def complete(
 @output_format_option
 @click.argument("input_file")
 def complete_multiple(
-    input_file,
-    path,
-    docstore_path,
-    docstore_collection,
-    conversation,
-    rule: List[str],
-    model,
-    query_property,
-    schema,
-    output_format,
-    **kwargs,
+        input_file,
+        path,
+        docstore_path,
+        docstore_collection,
+        conversation,
+        rule: List[str],
+        model,
+        query_property,
+        schema,
+        output_format,
+        **kwargs,
 ):
     """
     Generate an entry from a query using object completion for multiple objects.
@@ -878,17 +888,17 @@ def complete_multiple(
 )
 @schema_option
 def complete_all(
-    path,
-    collection,
-    docstore_path,
-    docstore_collection,
-    conversation,
-    rule: List[str],
-    model,
-    field_to_predict,
-    schema,
-    id_file,
-    **kwargs,
+        path,
+        collection,
+        docstore_path,
+        docstore_collection,
+        conversation,
+        rule: List[str],
+        model,
+        field_to_predict,
+        schema,
+        id_file,
+        **kwargs,
 ):
     """
     Generate missing values for all objects
@@ -977,17 +987,17 @@ def complete_all(
 )
 @schema_option
 def generate_evaluate(
-    path,
-    docstore_path,
-    docstore_collection,
-    model,
-    schema,
-    test_collection,
-    num_tests,
-    hold_back_fields,
-    mask_fields,
-    rule: List[str],
-    **kwargs,
+        path,
+        docstore_path,
+        docstore_collection,
+        model,
+        schema,
+        test_collection,
+        num_tests,
+        hold_back_fields,
+        mask_fields,
+        rule: List[str],
+        **kwargs,
 ):
     """
     Evaluate generate using a test set.
@@ -1074,17 +1084,17 @@ def generate_evaluate(
 @generate_background_option
 @click.argument("tasks", nargs=-1)
 def evaluate(
-    tasks,
-    working_directory,
-    path,
-    model,
-    generate_background,
-    num_testing,
-    hold_back_fields,
-    mask_fields,
-    rule: List[str],
-    collection,
-    **kwargs,
+        tasks,
+        working_directory,
+        path,
+        model,
+        generate_background,
+        num_testing,
+        hold_back_fields,
+        mask_fields,
+        rule: List[str],
+        collection,
+        **kwargs,
 ):
     """
     Evaluate given a task configuration.
@@ -1457,8 +1467,8 @@ def copy_collection(path, collection, target_path, **kwargs):
 @click.option(
     "--derived-collection-base",
     help=(
-        "Base name for derived collections. Will be suffixed with _train, _test, _val."
-        "If not provided, will use the same name as the original collection."
+            "Base name for derived collections. Will be suffixed with _train, _test, _val."
+            "If not provided, will use the same name as the original collection."
     ),
 )
 @model_option
@@ -1503,7 +1513,7 @@ def copy_collection(path, collection, target_path, **kwargs):
 )
 @path_option
 def split_collection(
-    path, collection, derived_collection_base, output_path, model, test_id_file, **kwargs
+        path, collection, derived_collection_base, output_path, model, test_id_file, **kwargs
 ):
     """
     Split a collection into test/train/validation.
@@ -1599,135 +1609,216 @@ def index_ontology_command(ont, path, collection, append, model, index_fields, b
 # 1) make gene embeddings for all human and mouse genes (command = make_gene_embeddings)
 # 2) choose 1000 pairs of orthologous genes and 1000 pairs of non-orthologous genes, and compare LLM embeddings
 # to see if orthology is recapitulated in the embeddings (command = gene_orthology)
-
 @ontology.command(name="make_gene_embeddings")
-@click.option("--monarch_url", required=True, default="https://data.monarchinitiative.org/monarch-kg/2024-02-13/monarch-kg.tar.gz", help="URL for the Monarch knowledge graph")
-@click.option('--gene_prefix', default=["HGNC:", "MGI:"], type=str, multiple=True)
-@click.option('--association_prefix', default=["has_association"], type=str, multiple=True)
-@click.option("--phenotype_prefix", default=["HP:", "MP:"], help="Prefix for phenotypes")
-@click.option("--collection", required=False, default="gene_embeddings", help="Collection name for gene embeddings")
-@click.option("--model_option", required=False, default=None, help="Model to use for embeddings")
-def make_gene_embeddings(monarch_url, gene_prefix, association_prefix, phenotype_prefix, collection, model_option):
+@path_option
+@click.option("--monarch_url",
+              '-u',
+              required=True,
+              help="URL for the Monarch knowledge graph"
+              )
+@click.option('--collection',
+              '-c',
+              required=True,
+              type=str,
+              help="Collections to take the embeddings from as --collection ont_hp"
+              )
+@click.option('--gene_prefix',
+              '-g',
+              required=True,
+              type=str,
+              help="Gene prefix for parsing of KG as --gene_prefix HGNC:"
+              )
+@click.option('--association_prefix',
+              '-a',
+              default="biolink:has_phenotype",
+              type=str
+              )
+@click.option("--phenotype_prefix",
+              '-p',
+              required=True,
+              default="HP:",
+              type=str,
+              help="Prefix for phenotypes as --phenotype_prefix HP:"
+              )
+@click.option('--gene_embeddings_collection',
+              '-e',
+              required=True,
+              default='gene_embeddings',
+              help='name for gene embeddings as --new_collections col_human'
+              )
+@click.option('--upsert',
+              '-s',
+              required=True,
+              type=click.Choice(['gene_by_gene', 'setwise', 'all']),
+              help="add --upsert to choose how to upsert into the db and compare later, 'all' should only be used if no"
+                   "gene_file is provided"
+              )
+@click.option('--gene_list_file',
+              '-f',
+              type=str,
+              callback=validate_upsert_option,
+              required=False,
+              help="Path to a text file containing the list of genes. "
+                   "Each gene should either be on a new line, or separated by a comma or space on the same line. "
+                   "Example formats: \n"
+                   "- Single-line: 'Gene1 Gene2 Gene3' or 'Gene1, Gene2, Gene3'\n"
+                   "- Multi-line: Each gene on a separate line"
+              )
+@click.pass_context
+def make_gene_embeddings(
+        # **kwargs
+        ctx,
+        monarch_url: str,
+        path: str,
+        collection: str,
+        gene_prefix: str,
+        phenotype_prefix: str,
+        association_prefix: str,  # TODO: not needed as has_phenotype, use that to work with pickle but orth also clear?
+        gene_embeddings_collection: str,
+        upsert: str,
+        gene_list_file: str,
+):
     """Generate LLM embeddings for human and mouse genes and phenotypes.
-
     Example:
     -------
-        curategpt gene_orthology --monarch_url $URL --hp_collection hp_index --mp_collection mp_index
-    """
+        curategpt gene_orthology --monarch_url $URL --path /path/to/db --collection ont_hp
+        -gene_prefix HGNC: --phenotype_prefix HP: --gene_list_file /path/to/file
 
+    """
     """Ask a knowledge source wrapper."""
-    # 1.
-    # if collection not existing RunTime Error, pls load collections first
-    wrapper = KGWrapper()
-    db = ChromaDBAdapter()
-    required_collections = ['ont_hp', "ont_mp"]
-    # this is faster than opening and failing
+    monarch_url = validate_monarch_url(monarch_url)
+
+    # gene_list_file = validate_gene_file(gene_list_file) if gene_list_file else None
+    gene_prefix, phenotype_prefix = validate_prefixis(gene_prefix, phenotype_prefix)
+    gene_list = parse_gene_list(gene_list_file) if gene_list_file else None
+    if gene_list_file: validate_gene_list(gene_list, gene_prefix)
+
+    db = ChromaDBAdapter(path)
     col_list = db.client.list_collections()
-    for collection in required_collections:
-        if collection not in col_list:
-            raise RuntimeError(f"{collection} is required. Please index them first."
-                               f"You need the ont_hp and ont_mp collections to continue")
-    # at this point we're sure the collections are already indexed and accesible
-    ont_hp, ont_mp = db.client.get_collection("ont_hp"), db.client.get_collection("ont_mp")
-    human_gene_to_hps = wrapper.human_gene_to_phenotype
-    mouse_gene_to_mps = wrapper.mouse_gene_to_phenotype
-    ortholgues_genes_set = wrapper.orthologues_genes_human_to_mouse_set
+    col_names = [col.name for col in col_list]
 
-    # 2.
-    def get_human_gene_embeddings(human_gene_to_hp: dict, ont_hp: Collection) -> dict:
-        human_gene_embeddings = {}
-        hp_embeddings = {}
-        col = ont_hp.get(include=['metadatas', 'embeddings'])
-        for embedding, metadata in zip(col.get("embeddings", {}), col.get("metadatas", {})):
-            metadata_json = json.loads(metadata["_json"])
-            hpo_id = metadata_json.get("original_id")
-            if hpo_id:
-                hp_embeddings[hpo_id] = np.array(embedding)
+    if collection not in col_names:
+        raise RuntimeError(f"{collection} is required. Please index them first")
+    col = db.client.get_collection(collection)
+    print(f"Collection name in cli: {col}")
+    gene_set = None
 
-        for gene, hpo_ids in human_gene_to_hp.items():
-            embeddings = np.array([hp_embeddings[hp_id] for hp_id in hpo_ids if hp_id in hp_embeddings])
-
-            if embeddings.size > 0:
-                average_embedding = np.mean(embeddings, axis=0)
-                human_gene_embeddings[gene] = average_embedding
-
-        return human_gene_embeddings
-
-    def get_mouse_gene_embeddings(mouse_gene_to_mps: dict, ont_mp: Collection) -> dict:
-        mouse_gene_embeddings = {}
-        mp_embeddings = {}
-        col = ont_mp.get(include=['metadatas', 'embeddings'])
-        for embedding, metadata in zip(col.get("embeddings", {}), col.get("metadatas", {})):
-            metadata_json = json.loads(metadata["_json"])
-            hpo_id = metadata_json.get("original_id")
-            if hpo_id:
-                mp_embeddings[hpo_id] = embedding
-
-        for gene, mps in mouse_gene_to_mps.items():
-            embeddings = np.array([mp_embeddings[mp] for mp in mps if mp in mp_embeddings])
-
-            if embeddings.size > 0:
-                average_embedding = np.mean(embeddings, axis=0)
-                mouse_gene_embeddings[gene] = average_embedding
-
-        return mouse_gene_embeddings
-
-    # 3.
-    # create new collections
-    # upsert into collections: human and mouse gene_embeddings (averaged embeddings of all hps in a gene)
-    human_gene_embeddings = get_human_gene_embeddings(
-        human_gene_to_hp=human_gene_to_hps,
-        ont_hp=ont_hp
+    wrapper = KGWrapper(
+        url=monarch_url,
+        gene_list=gene_list,
+        gene_prefix=gene_prefix,
+        association_prefix=association_prefix,
+        phenotype_prefix=phenotype_prefix
     )
 
-    mouse_gene_embeddings = get_mouse_gene_embeddings(
-        mouse_gene_to_mps=mouse_gene_to_mps,
-        ont_mp=ont_mp
+    if upsert == "all":
+        # continue with None gene list
+        print("gene_by_gene")
+        if 'HGNC:' == gene_prefix and 'HP:' == phenotype_prefix:
+            gene_set = wrapper.get_all_genes_with_phenotypes
+        elif 'MGI:' == gene_prefix and 'MP:' == phenotype_prefix:
+            gene_set = wrapper.get_all_genes_with_phenotypes
+            print(gene_set)
+            print(f"gene_list: {gene_list}")
+
+    if upsert == "gene_by_gene":
+        if gene_list is not None and 'HGNC:' == gene_prefix and 'HP:' == phenotype_prefix:
+            gene_set = wrapper.phenotypes_for_gene_set
+        elif gene_list is not None and 'MGI:' == gene_prefix and 'MP:' == phenotype_prefix:
+            gene_set = wrapper.phenotypes_for_gene_set
+
+    handler = GeneEmbeddingsHandler()
+    handler.db = db
+    handler.create_gene_embeddings(
+        gene_to_hps=gene_set,
+        col=col,
+        collection_name=gene_embeddings_collection
     )
 
-    def upsert_human_gene_embeddings(gene_embeddings_dict_human: dict):
-        human_gene_embeddings_collection = db.client.get_or_create_collection("human_gene_embeddings_collection")
-        gene_ids = np.array(list(gene_embeddings_dict_human.keys()), dtype=object)
-        embeddings = np.stack(list(gene_embeddings_dict_human.values()))
-        metadatas = [{"type": "Gene"}] * len(gene_ids)
-        try:
-            human_gene_embeddings_collection.upsert(ids=gene_ids, embeddings=embeddings, metadatas=metadatas)
-        except Exception as e:
-            print(f"Error in upserting human gene embeddings: {e}")
 
-    def upsert_mouse_gene_embeddings(gene_embeddings_dict_mouse: dict):
-        mouse_gene_embeddings_collection = db.client.get_or_create_collection("mouse_gene_embeddings_collection")
-        gene_ids = np.array(list(gene_embeddings_dict_mouse.keys()), dtype=object)
-        embeddings = np.stack(list(mouse_gene_embeddings.values()))
-        metadatas = [{"type": "Gene"}] * len(gene_ids)
-        try:
-            mouse_gene_embeddings_collection.upsert(ids=gene_ids, embeddings=embeddings, metadatas=metadatas)
-        except Exception as e:
-            print(f"Error in upserting mouse gene embeddings: {e}")
+@ontology.command(name="gene_orthology")
+@path_option
+@click.option("--monarch_url",
+              '-u',
+              required=True,
+              help="URL for the Monarch knowledge graph"
+              )
+@click.option("--collection_one", required=False, default="gene_embeddings", help="Collection name for gene embeddings")
+@click.option("--collection_two", required=False, default="gene_embeddings", help="Collection name for gene embeddings")
+@click.option('--output_file_one', default='orth_results.tsv',
+              help="Output file for saving the comparison results.")
+@click.option('--output_file_two', required=False, default='non_orth_results.tsv',
+              help="Output file for saving the comparison results.")
+# @click.option('--comparison_mode', type=click.Choice(['pairwise', 'setwise']), default='pairwise',
+#               help="Mode of comparison (pairwise or setwise).")
+@click.option('--gene_pairs_file',
+              '-f',
+              type=str,
+              required=False,
+              help="Path to a text file containing the pairs of genes."
+                   "Each gene should either be on a new line, or separated by a comma or space on the same line. "
+                   "Example formats: \n"
+                   "- Single-line: 'Gene1 Gene2 Gene3' or 'Gene1, Gene2, Gene3'\n"
+                   "- Multi-line: Each gene on a separate line"
+              )
+# @click.option('--gene_pair', '-p', type=str, help='A pair of HGNC and MGI genes (e.g. orthologous)')
+# @click.option('--gene_prefix', default=["HGNC:", "MGI:"], type=str, multiple=True)
+# @click.option("--orthology_biolink_type", required=False, default="biolink:orthologous_to",
+#               help="Biolink term for orthology")
+def gene_orthology(monarch_url, path, collection_one, collection_two, output_file_one, output_file_two, gene_pairs_file):
+    """Compare LLM embeddings for orthologous and non-orthologous genes."""
+    db = ChromaDBAdapter(path=path)
+    collection_one = db.client.get_collection(collection_one)
+    collection_two = db.client.get_collection(collection_two)
+    import ast
+    if gene_pairs_file:
+        with open(f'{gene_pairs_file}', 'r') as file:
+            gene_pairs_string = file.read()
+        gene_pairs = ast.literal_eval(gene_pairs_string)
 
-    # after this collections are created and ready to use and compare
-    upsert_human_gene_embeddings(human_gene_embeddings)
-    upsert_mouse_gene_embeddings(mouse_gene_embeddings)
+        analyser = EmbeddingAnalyser()
+        analyser.outfile = output_file_one
+        analyser.collection_entity_one = collection_one
+        analyser.collection_entity_two = collection_two
+        analyser.pairs = gene_pairs
+        analyser.gene_pairwise_similarity_using_collections()  # Perform pairwise comparison
 
-    # Call an agent to:
-    # download Monarch knowledge graph [x]
-    # extract gene and phenotype associations [x]
-    # generate LLM embeddings for human and mouse genes and phenotypes [x]
-    # write out embeddings to a collection [x]
-    pass
+    orth = OrthologyHandler(url=monarch_url)
+    _ = orth.orthologous_pairs_with_phenotypes  # Explicitly access the property to trigger initialization
+    orth_pairs = orth.get_1000_random_orthologous_pairs()
+    non_orth_pairs = orth.get_1000_random_non_orthologous_pairs()
+    print(f"path to orth out {output_file_one}")
+    print(f"path to non orth out {output_file_two}")
 
-@click.option("--monarch_url", required=True, default="https://data.monarchinitiative.org/monarch-kg/2024-02-13/monarch-kg.tar.gz", help="URL for the Monarch knowledge graph")
-@click.option("--collection", required=False, default="gene_embeddings", help="Collection name for gene embeddings")
-@click.option('--gene_prefix', default=["HGNC:", "MGI:"], type=str, multiple=True)
-@click.option("--orthology_biolink_type", required=False, default="biolink:orthologous_to", help="Biolink term for orthology")
-def gene_orthology(monarch_url, collection, gene_prefix, orthology_biolink_type):
-    """Compare LLM embeddings for orthologous and non-orthologous genes.
-    """
-    # just thoughts:
-    # gene_embeddings = load_gene_embeddings(collection)
-    # orthologous_pairs = extract_orthologous_pairs(monarch_url, gene_prefix, orthology_biolink_type)
-    # compare_embeddings(gene_embeddings, orthologous_pairs, non_orthologous_pairs)
-    pass
+    if gene_pairs_file is None:
+        print(f"\n\nanalyse orth pairs and out to {output_file_one}\n\n")
+        analyser_orth = EmbeddingAnalyser()
+        analyser_orth.outfile = output_file_one
+        analyser_orth.collection_entity_one = collection_one
+        analyser_orth.collection_entity_two = collection_two
+        analyser_orth.pairs = orth_pairs
+        analyser_orth.gene_pairwise_similarity_using_collections()  # Perform pairwise comparison
+
+        print(f"\n\nanalyse orth pairs and out to {output_file_two}\n\n")
+        analyser_non_orth = EmbeddingAnalyser()
+        analyser_non_orth.outfile = output_file_two
+        analyser_non_orth.collection_entity_one = collection_one
+        analyser_non_orth.collection_entity_two = collection_two
+        analyser_non_orth.pairs = non_orth_pairs
+        analyser_non_orth.gene_pairwise_similarity_using_collections()  # Perform pairwise comparison
+
+    # if comparison_mode == 'pairwise':
+    #     analyser_orth.gene_pairwise_similarity_using_collections()  # Perform pairwise comparison
+    # elif comparison_mode == 'setwise':
+    #     analyser_orth.gene_setwise_similarity_using_collections()  # Perform setwise comparison
+
+    click.echo(f"Comparisons completed. Results are saved to {output_file_one} and {output_file_two}.")
+
+    # to analyze gene orthology recapitulation
+    # 1) make gene embeddings for all human and mouse genes (command = make_gene_embeddings)
+    # 2) choose 1000 pairs of orthologous genes and 1000 pairs of non-orthologous genes, and compare LLM embeddings
+    # to see if orthology is recapitulated in the embeddings (command = gene_orthology)
+
 
 @main.group()
 def view():
