@@ -1,19 +1,14 @@
 """Command line interface for curate-gpt."""
 import csv
-import pickle
-import re
 import gzip
 import json
 import logging
-import random
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Union, Set, Tuple
 
 import click
-import numpy as np
 import pandas as pd
-from chromadb import Collection
 import yaml
 from click_default_group import DefaultGroup
 from linkml_runtime.dumpers import json_dumper
@@ -40,8 +35,7 @@ from curate_gpt.store.schema_proxy import SchemaProxy
 from curate_gpt.utils.vectordb_operations import match_collections
 from curate_gpt.wrappers import BaseWrapper, get_wrapper
 from curate_gpt.wrappers.knowledgegraph.orthology_wrapper import OrthologyHandler
-from curate_gpt.wrappers.knowledgegraph.util import parse_gene_list, validate_gene_list, validate_prefixis, \
-    validate_gene_file, validate_monarch_url, validate_upsert_option
+from curate_gpt.wrappers.knowledgegraph.util import parse_gene_list, validate_gene_list, validate_prefixis, validate_monarch_url, validate_upsert_option
 from curate_gpt.wrappers.literature.pubmed_wrapper import PubmedWrapper
 from curate_gpt.wrappers.ontology import OntologyWrapper
 
@@ -1605,59 +1599,21 @@ def index_ontology_command(ont, path, collection, append, model, index_fields, b
     db.update_collection_metadata(collection, object_type="OntologyClass")
 
 
-# to analyze gene orthology recapitulation
-# 1) make gene embeddings for all human and mouse genes (command = make_gene_embeddings)
-# 2) choose 1000 pairs of orthologous genes and 1000 pairs of non-orthologous genes, and compare LLM embeddings
-# to see if orthology is recapitulated in the embeddings (command = gene_orthology)
 @ontology.command(name="make_gene_embeddings")
 @path_option
-@click.option("--monarch_url",
-              '-u',
-              required=True,
-              help="URL for the Monarch knowledge graph"
-              )
-@click.option('--collection',
-              '-c',
-              required=True,
-              type=str,
-              help="Collections to take the embeddings from as --collection ont_hp"
-              )
-@click.option('--gene_prefix',
-              '-g',
-              required=True,
-              type=str,
-              help="Gene prefix for parsing of KG as --gene_prefix HGNC:"
-              )
-@click.option('--association_prefix',
-              '-a',
-              default="biolink:has_phenotype",
-              type=str
-              )
-@click.option("--phenotype_prefix",
-              '-p',
-              required=True,
-              default="HP:",
-              type=str,
-              help="Prefix for phenotypes as --phenotype_prefix HP:"
-              )
-@click.option('--gene_embeddings_collection',
-              '-e',
-              required=True,
-              default='gene_embeddings',
-              help='name for gene embeddings as --new_collections col_human'
-              )
-@click.option('--upsert',
-              '-s',
-              required=True,
-              type=click.Choice(['gene_by_gene', 'setwise', 'all']),
-              help="add --upsert to choose how to upsert into the db and compare later, 'all' should only be used if no"
-                   "gene_file is provided"
-              )
-@click.option('--gene_list_file',
-              '-f',
-              type=str,
-              callback=validate_upsert_option,
-              required=False,
+@click.option("--monarch_url", '-u', required=True, help="URL for the Monarch knowledge graph")
+@click.option('--collection', '-c', required=True, type=str,
+              help="Collections to take the embeddings from as --collection ont_hp")
+@click.option('--gene_prefix', '-g', required=True, type=str,
+              help="Gene prefix for parsing of KG as --gene_prefix HGNC:")
+@click.option('--association_prefix', '-a', default="biolink:has_phenotype", type=str)
+@click.option("--phenotype_prefix", '-p', required=True, default="HP:", type=str,
+              help="Prefix for phenotypes as --phenotype_prefix HP:")
+@click.option('--gene_embeddings_collection', '-e', required=True, default='gene_embeddings',
+              help='name for gene embeddings as --new_collections col_human')
+@click.option('--upsert', '-s', required=True, type=click.Choice(['gene_by_gene', 'all']),
+              help="add --upsert to choose how to upsert into the db and compare later, 'all' should only be used if no gene_file is provided")
+@click.option('--gene_list_file', '-f', type=str, callback=validate_upsert_option, required=False,
               help="Path to a text file containing the list of genes. "
                    "Each gene should either be on a new line, or separated by a comma or space on the same line. "
                    "Example formats: \n"
@@ -1666,14 +1622,12 @@ def index_ontology_command(ont, path, collection, append, model, index_fields, b
               )
 @click.pass_context
 def make_gene_embeddings(
-        # **kwargs
-        ctx,
         monarch_url: str,
         path: str,
         collection: str,
         gene_prefix: str,
         phenotype_prefix: str,
-        association_prefix: str,  # TODO: not needed as has_phenotype, use that to work with pickle but orth also clear?
+        association_prefix: str,  # TODO: not needed
         gene_embeddings_collection: str,
         upsert: str,
         gene_list_file: str,
@@ -1682,7 +1636,7 @@ def make_gene_embeddings(
     Example:
     -------
         curategpt gene_orthology --monarch_url $URL --path /path/to/db --collection ont_hp
-        -gene_prefix HGNC: --phenotype_prefix HP: --gene_list_file /path/to/file
+        -gene_prefix HGNC: --phenotype_prefix HP: --gene_list_file /path/to/file --upsert gene_by_gene
 
     """
     """Ask a knowledge source wrapper."""
@@ -1700,7 +1654,6 @@ def make_gene_embeddings(
     if collection not in col_names:
         raise RuntimeError(f"{collection} is required. Please index them first")
     col = db.client.get_collection(collection)
-    print(f"Collection name in cli: {col}")
     gene_set = None
 
     wrapper = KGWrapper(
@@ -1738,34 +1691,16 @@ def make_gene_embeddings(
 
 @ontology.command(name="gene_orthology")
 @path_option
-@click.option("--monarch_url",
-              '-u',
-              required=True,
-              help="URL for the Monarch knowledge graph"
-              )
+@click.option("--monarch_url", '-u', required=True, help="URL for the Monarch knowledge graph")
 @click.option("--collection_one", required=False, default="gene_embeddings", help="Collection name for gene embeddings")
 @click.option("--collection_two", required=False, default="gene_embeddings", help="Collection name for gene embeddings")
-@click.option('--output_file_one', default='orth_results.tsv',
-              help="Output file for saving the comparison results.")
+@click.option('--output_file_one', default='orth_results.tsv', help="Output file for saving the comparison results.")
 @click.option('--output_file_two', required=False, default='non_orth_results.tsv',
               help="Output file for saving the comparison results.")
-# @click.option('--comparison_mode', type=click.Choice(['pairwise', 'setwise']), default='pairwise',
-#               help="Mode of comparison (pairwise or setwise).")
-@click.option('--gene_pairs_file',
-              '-f',
-              type=str,
-              required=False,
-              help="Path to a text file containing the pairs of genes."
-                   "Each gene should either be on a new line, or separated by a comma or space on the same line. "
-                   "Example formats: \n"
-                   "- Single-line: 'Gene1 Gene2 Gene3' or 'Gene1, Gene2, Gene3'\n"
-                   "- Multi-line: Each gene on a separate line"
-              )
-# @click.option('--gene_pair', '-p', type=str, help='A pair of HGNC and MGI genes (e.g. orthologous)')
-# @click.option('--gene_prefix', default=["HGNC:", "MGI:"], type=str, multiple=True)
-# @click.option("--orthology_biolink_type", required=False, default="biolink:orthologous_to",
-#               help="Biolink term for orthology")
-def gene_orthology(monarch_url, path, collection_one, collection_two, output_file_one, output_file_two, gene_pairs_file):
+@click.option('--gene_pairs_file', '-f', type=str, required=False,
+              help="Path to a text file containing the pairs of genes.")
+def gene_orthology(monarch_url, path, collection_one, collection_two, output_file_one, output_file_two,
+                   gene_pairs_file):
     """Compare LLM embeddings for orthologous and non-orthologous genes."""
     db = ChromaDBAdapter(path=path)
     collection_one = db.client.get_collection(collection_one)
@@ -1781,44 +1716,32 @@ def gene_orthology(monarch_url, path, collection_one, collection_two, output_fil
         analyser.collection_entity_one = collection_one
         analyser.collection_entity_two = collection_two
         analyser.pairs = gene_pairs
-        analyser.gene_pairwise_similarity_using_collections()  # Perform pairwise comparison
+        analyser.gene_pairwise_similarity_using_collections()
 
     orth = OrthologyHandler(url=monarch_url)
-    _ = orth.orthologous_pairs_with_phenotypes  # Explicitly access the property to trigger initialization
     orth_pairs = orth.get_1000_random_orthologous_pairs()
     non_orth_pairs = orth.get_1000_random_non_orthologous_pairs()
-    print(f"path to orth out {output_file_one}")
-    print(f"path to non orth out {output_file_two}")
+    # print(f"path to orth out {output_file_one}")
+    # print(f"path to non orth out {output_file_two}")
 
     if gene_pairs_file is None:
-        print(f"\n\nanalyse orth pairs and out to {output_file_one}\n\n")
+        # print(f"\n\nanalyse orth pairs and out to {output_file_one}\n\n")
         analyser_orth = EmbeddingAnalyser()
         analyser_orth.outfile = output_file_one
         analyser_orth.collection_entity_one = collection_one
         analyser_orth.collection_entity_two = collection_two
         analyser_orth.pairs = orth_pairs
-        analyser_orth.gene_pairwise_similarity_using_collections()  # Perform pairwise comparison
+        analyser_orth.gene_pairwise_similarity_using_collections()
 
-        print(f"\n\nanalyse orth pairs and out to {output_file_two}\n\n")
+        # print(f"\n\nanalyse orth pairs and out to {output_file_two}\n\n")
         analyser_non_orth = EmbeddingAnalyser()
         analyser_non_orth.outfile = output_file_two
         analyser_non_orth.collection_entity_one = collection_one
         analyser_non_orth.collection_entity_two = collection_two
         analyser_non_orth.pairs = non_orth_pairs
-        analyser_non_orth.gene_pairwise_similarity_using_collections()  # Perform pairwise comparison
-
-    # if comparison_mode == 'pairwise':
-    #     analyser_orth.gene_pairwise_similarity_using_collections()  # Perform pairwise comparison
-    # elif comparison_mode == 'setwise':
-    #     analyser_orth.gene_setwise_similarity_using_collections()  # Perform setwise comparison
+        analyser_non_orth.gene_pairwise_similarity_using_collections()
 
     click.echo(f"Comparisons completed. Results are saved to {output_file_one} and {output_file_two}.")
-
-    # to analyze gene orthology recapitulation
-    # 1) make gene embeddings for all human and mouse genes (command = make_gene_embeddings)
-    # 2) choose 1000 pairs of orthologous genes and 1000 pairs of non-orthologous genes, and compare LLM embeddings
-    # to see if orthology is recapitulated in the embeddings (command = gene_orthology)
-
 
 @main.group()
 def view():
