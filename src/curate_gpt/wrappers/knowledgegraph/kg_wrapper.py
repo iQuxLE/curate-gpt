@@ -58,40 +58,15 @@ class KGWrapper:
             gene_prefix=self.gene_prefix,
             phenotype_prefix=self.phenotype_prefix)
 
-    # @property
-    # def orthologues_genes_human_to_mouse_dict(self) -> dict:
-    #     return self.data["orthologues_genes_human_to_mouse_dict"]
-    #
-    # @property
-    # def get_orthologous(self) -> list[Tuple[str, str]]:
-    #     return self.agent.get_orthologoues(gene_list)
-    #
-    # @property
-    # def orthologues_genes_human_to_mouse_list(self) -> list[Tuple[str, str]]:
-    #     return self.data["orthologues_genes_human_to_mouse"]
-    #
-    # @property
-    # def random_1000_ortholgous_pairs(self) -> list[Tuple[str, str]]:
-    #     return self.data["1000_orthologous_pairs"]
-    #
-    # @property
-    # def random_1000_non_ortholgous_pairs(self) -> list[Tuple[str, str]]:
-    #     return self.data["1000_non_orthologous_pairs"]
-
 
 class GeneEmbeddingsHandler:
     _gene_embeddings: dict = None
     db: ChromaDBAdapter
 
-    #
-    # def __int__(self, db):
-    #     self.db = db
-
     @property
     def gene_embeddings(self):
         return self._gene_embeddings
 
-    # put the gene_embeddings in a file if for example human_gene
     def save_to_file(self, file_path):
         with open(file_path, 'wb') as file:
             pickle.dump(self, file)
@@ -100,52 +75,11 @@ class GeneEmbeddingsHandler:
         with open(file_path, 'rb') as file:
             return pickle.load(file)
 
-    # @staticmethod
-    # def get_gene_embeddings(gene_to_hp: dict, collection: Collection) -> dict:
-    #     """
-    #     averages HP terms and inputs averaged embeddings for all of those per Gene
-    #     """
-    #     keys = [k for c, (k, v) in enumerate(gene_to_hp.items()) if c < 2]
-    #     vs = [v for c, (k, v) in enumerate(gene_to_hp.items()) if c < 10]
-    #
-    #     print(f"gene_to_hps keys: {keys} + {vs}")
-    #     gene_embeddings = {}
-    #     phenotype_embeddings = {}
-    #     col = collection.get(include=['metadatas', 'embeddings'])
-    #     for embedding, metadata in zip(col.get("embeddings", {}), col.get("metadatas", {})):
-    #         metadata_json = json.loads(metadata["_json"])
-    #         phenotype_id = metadata_json.get("original_id")
-    #         if phenotype_id:
-    #             phenotype_embeddings[phenotype_id] = np.array(embedding)
-    #     # {Gene1: [hp1, hp2, hp3]
-    #     # Gene2: [hp3,hp4, hp5]
-    #     # }
-    #     keys = [k for c, (k, v) in enumerate(phenotype_embeddings.items()) if c < 2]
-    #     vs = [len(v) for c, (k, v) in enumerate(phenotype_embeddings.items()) if c < 2]
-    #     print(f"phenotype embeddings keys: {keys} + {vs}")
-    #     for gene, phenotypes in gene_to_hp.items():
-    #         # does gene by gene so phenotypes a list for this genes phenotypes
-    #         embeddings = np.array(
-    #             [phenotype_embeddings[phenotype] for phenotype in phenotypes if phenotype in phenotype_embeddings])
-    #         # average whole list of embeddings from phenotypes per gene
-    #         if embeddings.size > 0:
-    #             average_embedding = np.mean(embeddings, axis=0)
-    #             gene_embeddings[gene] = average_embedding
-    #     for key, value in gene_embeddings.items():
-    #         if value is None:
-    #             print(key)
-    #     keys = [k for c, (k, v) in enumerate(gene_embeddings.items()) if c < 2]
-    #     print(f"gene_emebddings keys: {keys}")
-    #     return gene_embeddings
     @staticmethod
     def get_gene_embeddings(gene_to_hp: dict, collection: Collection) -> dict:
         gene_embeddings = {}
         phenotype_embeddings = {}
-
-        # Load all relevant data from the collection
         col = collection.get(include=['metadatas', 'embeddings'])
-
-        # Process and store phenotype embeddings with proper error handling
         for embedding, metadata in zip(col.get("embeddings", []), col.get("metadatas", [])):
             try:
                 metadata_json = json.loads(metadata["_json"])
@@ -155,35 +89,25 @@ class GeneEmbeddingsHandler:
             except json.JSONDecodeError:
                 continue
 
-        # Debugging: check if IDs match expectations
-        print(f"Sample Phenotype IDs from Collection: {list(phenotype_embeddings.keys())[:5]}")
+        # print(f"Sample Phenotype IDs from Collection: {list(phenotype_embeddings.keys())[:5]}")
         phenotype_ids_from_genes = set([ph for phenotypes in gene_to_hp.values() for ph in phenotypes])
-        print(f"Sample Phenotype IDs from Genes: {list(phenotype_ids_from_genes)[:5]}")
-        print(f"Overlapping IDs: {phenotype_ids_from_genes.intersection(phenotype_embeddings.keys())}")
+        # print(f"Sample Phenotype IDs from Genes: {list(phenotype_ids_from_genes)[:5]}")
+        # print(f"Overlapping IDs: {phenotype_ids_from_genes.intersection(phenotype_embeddings.keys())}")
 
-        # Calculate average embeddings for each gene
         for gene, phenotypes in gene_to_hp.items():
             embeddings = [phenotype_embeddings[ph] for ph in phenotypes if ph in phenotype_embeddings]
             if embeddings:
                 gene_embeddings[gene] = np.mean(embeddings, axis=0)
 
-        # Debugging: Final check on what's being returned
-        print(f"Gene Embeddings Processed: {len(gene_embeddings)} items.")
+        # # Debugging: Final check on what's being returned
+        # print(f"Gene Embeddings Processed: {len(gene_embeddings)} items.")
 
         return gene_embeddings
 
     def upsert_gene_embeddings(self, gene_embeddings: Dict, collection_name: str):
         collection = self.db.client.get_or_create_collection(collection_name)
-        print(collection)
-        print(f"Gene Embeddings Dict Len: {len(gene_embeddings)}")
         gene_ids = list(gene_embeddings.keys())
-        # print(type(gene_ids), gene_ids)
-        # e = gene_embeddings.values()
-        # k = gene_embeddings.keys()
-        print(len(list(gene_embeddings.keys())))
-        print(len(list(gene_embeddings.values())))
         embeddings = np.stack(list(gene_embeddings.values()))
-        print(type(embeddings), embeddings)
         metadatas = [{"type": "Gene"}] * len(gene_ids)
         try:
             collection.upsert(ids=gene_ids, embeddings=embeddings, metadatas=metadatas)
@@ -258,12 +182,6 @@ class EmbeddingAnalyser:
     gene_pairs: Optional[List[Tuple[str, str]]]
 
     @staticmethod
-    # def cosine_similarity(vec1, vec2):
-    #     dot_product = np.dot(vec1, vec2)
-    #     norm_vec1 = np.linalg.norm(vec1)
-    #     norm_vec2 = np.linalg.norm(vec2)
-    #     similarity = dot_product / (norm_vec1 * norm_vec2)
-    #     return similarity
     def cosine_similarity(vec1, vec2):
         # Flatten the arrays to ensure they are 1D (shape (1536,) instead of (1, 1536))
         vec1 = np.array(vec1).flatten()
@@ -273,16 +191,12 @@ class EmbeddingAnalyser:
             print(f"One of the vectors is empty. HGNC vec: {vec1.size} MGI vec: {vec2.size}")
             return 0  # Return a default or error value for empty vectors
 
-        # Calculate the dot product
         dot_product = np.dot(vec1, vec2)
-
-        # Calculate the norms of the vectors
         norm_vec1 = np.linalg.norm(vec1)
         norm_vec2 = np.linalg.norm(vec2)
 
-        # Compute cosine similarity
         if norm_vec1 == 0 or norm_vec2 == 0:
-            return 0  # Avoid division by zero if a vector is zero
+            return 0
         similarity = dot_product / (norm_vec1 * norm_vec2)
         return similarity
 
@@ -321,28 +235,6 @@ class EmbeddingAnalyser:
         """ Gets pairwise similarity of gene pairs from gene embeddings from ChromaDB collections
         """
         results = []
-        # for i, (hgnc, mgi) in enumerate(self.pairs):
-        #     entity_one_embedding = self.collection_entity_one.get(ids=hgnc, include=["embeddings"])
-        #     entity_two_embedding = self.collection_entity_two.get(ids=mgi, include=["embeddings"])
-        #     print(entity_one_embedding.keys(), entity_two_embedding.keys())
-        #     cosine = self.cosine_similarity(entity_one_embedding['embeddings'], entity_two_embedding['embeddings'])
-        #     print(hgnc, mgi, cosine)
-        #     results.append((i, hgnc, mgi, cosine))
-        # for i, (hgnc, mgi) in enumerate(self.pairs):
-        #     entity_one_embedding = self.collection_entity_one.get(ids=hgnc, include=["embeddings"])
-        #     entity_two_embedding = self.collection_entity_two.get(ids=mgi, include=["embeddings"])
-        #
-        #     if 'embeddings' in entity_one_embedding and 'embeddings' in entity_two_embedding:
-        #         cosine = self.cosine_similarity(entity_one_embedding['embeddings'], entity_two_embedding['embeddings'])
-        #         print(f"Comparing: {hgnc} - {mgi}")
-        #         print(f"Cosine similarity: {cosine}")
-        #         results.append((i, hgnc, mgi, cosine))
-        #     else:
-        #         if 'embeddings' not in entity_one_embedding:
-        #             print(f"No embedding found for: {hgnc}")
-        #         if 'embeddings' not in entity_two_embedding:
-        #             print(f"No embedding found for: {mgi}")
-        #         results.append((i, hgnc, mgi, 0))
         for i, (hgnc, mgi) in enumerate(self.pairs):
             entity_one_embedding = self.collection_entity_one.get(ids=hgnc, include=["embeddings"])
             entity_two_embedding = self.collection_entity_two.get(ids=mgi, include=["embeddings"])
