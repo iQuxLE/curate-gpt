@@ -105,11 +105,10 @@ class DuckDBAdapter(DBAdapter):
         :param collection:
         :return:
         """
-        logger.info(f"Table {collection} does not exist, creating ...: PARAMS: model: {model}, distance: {distance},\
+        logger.info(f"Table {collection} does not exist, creating table as: PARAMS: model: {model}, distance: {distance},\
         vec_dimension: {vec_dimension}")
         if model is None:
             model = self.default_model
-            logger.info(f"Model in create_table_if_not_exists: {model}")
         if distance is None:
             distance = self.distance_metric
         safe_collection_name = f'"{collection}"'
@@ -201,7 +200,6 @@ class DuckDBAdapter(DBAdapter):
         :param kwargs:
         :return:
         """
-        logger.info(f"\n\nIn insert duckdb, {kwargs.get('model')}\n\n")
         self._process_objects(objs, method="insert", **kwargs)
 
     # DELETE first to ensure primary key  constraint https://duckdb.org/docs/sql/indexes
@@ -216,9 +214,7 @@ class DuckDBAdapter(DBAdapter):
         ids = [self._id(o, self.id_field) for o in objs]
         safe_collection_name = f'"{collection}"'
         delete_sql = f"DELETE FROM {safe_collection_name} WHERE id = ?"
-        logger.info("DELETED collection: {collection}")
         self.conn.executemany(delete_sql, [(id_,) for id_ in ids])
-        logger.info(f"INSERTING collection: {collection}")
         self.insert(objs, **kwargs)
 
     def upsert(self, objs: Union[OBJECT, Iterable[OBJECT]], **kwargs):
@@ -229,8 +225,6 @@ class DuckDBAdapter(DBAdapter):
         :return:
         """
         collection = kwargs.get("collection")
-        logger.info(f"\n\nUpserting objects into collection {collection}\n\n")
-        logger.info(f"model in upsert: {kwargs.get('model')}, distance: {self.distance_metric}")
         if collection not in self.list_collection_names():
             vec_dimension = self._get_embedding_dimension(kwargs.get("model"))
             self._create_table_if_not_exists(collection, vec_dimension, model=kwargs.get("model"), distance=self.distance_metric)
@@ -246,11 +240,9 @@ class DuckDBAdapter(DBAdapter):
         objs_to_update = [o for o in objs if self._id(o, self.id_field) in existing_ids]
         objs_to_insert = [o for o in objs if self._id(o, self.id_field) not in existing_ids]
         if objs_to_update:
-            logger.info(f"in Upsert and updating now in collection: {collection}")
             self.update(objs_to_update, **kwargs)
 
         if objs_to_insert:
-            logger.info(f"in Upsert and inserting now in collection: {collection}")
             self.insert(objs_to_insert, **kwargs)
 
     def _process_objects(
@@ -278,12 +270,9 @@ class DuckDBAdapter(DBAdapter):
         :return:
         """
         collection = self._get_collection_name(collection)
-        logger.info(f"Processing objects for collection {collection}")
-        self.vec_dimension = self._get_embedding_dimension(model)
-        logger.info(f"(process_objects: Model: {model}, vec_dimension: {self.vec_dimension}")
+        vec_dimension = self._get_embedding_dimension(model)
         if collection not in self.list_collection_names():
-            logger.info(f"(process)Creating table for collection {collection}")
-            self._create_table_if_not_exists(collection, self.vec_dimension, model=model, distance=distance)
+            self._create_table_if_not_exists(collection, vec_dimension, model=model, distance=distance)
         if isinstance(objs, Iterable) and not isinstance(objs, str):
             objs = list(objs)
         else:
@@ -301,7 +290,6 @@ class DuckDBAdapter(DBAdapter):
         sql_command = sql_command.format(collection=collection)
         for next_objs in chunk(objs, batch_size):
             next_objs = list(next_objs)
-            logger.info("Processing batch of objects in DuckDB process_objects ...")
             docs = [self._text(o, text_field) for o in next_objs]
             docs_len = sum([len(d) for d in docs])
             cumulative_len += docs_len
@@ -626,10 +614,7 @@ class DuckDBAdapter(DBAdapter):
         else:
             include = set(include)
         text_field = self.text_lookup
-        logger.info(f"## TEXT FIELD:{text_field}")
         text = self._text(obj, text_field)
-        logger.info(f"{text}")
-        logger.info(f"Query term: {text}")
         yield from self.search(text=text, include=include, **kwargs)
 
     def lookup(self, id: str, collection: str = None, include=None, **kwargs) -> OBJECT:

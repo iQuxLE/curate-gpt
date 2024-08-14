@@ -190,7 +190,6 @@ class ChromaDBAdapter(DBAdapter):
         cumulative_len = 0
         for next_objs in chunk(objs, batch_size):
             next_objs = list(next_objs)
-            logger.info("Preparing batch from position ...")
             docs = [self._text(o, text_field) for o in next_objs]
             docs_len = sum([len(d) for d in docs])
             cumulative_len += docs_len
@@ -272,7 +271,6 @@ class ChromaDBAdapter(DBAdapter):
         Parameters
         ----------
         """
-        logger.info(f"Getting metadata for {collection_name}")
         collection_name = self._get_collection(collection_name)
         try:
             logger.info(f"Getting collection object {collection_name}")
@@ -346,7 +344,6 @@ class ChromaDBAdapter(DBAdapter):
         expand: bool = None,
         **kwargs,
     ) -> Iterator[SEARCH_RESULT]:
-        logger.info(f"Searching for {text} in {collection}")
         if relevance_factor is not None and relevance_factor < 1.0:
             yield from self.diversified_search(
                 text=text,

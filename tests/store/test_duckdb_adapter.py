@@ -110,15 +110,15 @@ def test_the_embedding_function(simple_schema_manager, example_texts):
     assert db.collection_metadata("one_collection").model == "all-MiniLM-L6-v2"
     assert db.collection_metadata("one_collection").hnsw_space == "cosine"
     assert db.collection_metadata("one_collection").name == "one_collection"
-    # db.insert(objs, collection="test_openai_collection", model="openai:")
-    # print(db.collection_metadata("test_openai_collection").model)
-    # assert db.collection_metadata("test_openai_collection").model == "openai:"
-    # assert db.collection_metadata("test_openai_collection").hnsw_space == "cosine"
-    # assert db.collection_metadata("test_openai_collection").name == "test_openai_collection"
-    # db.insert(objs, collection="test_openai_full_collection", model="openai:text-embedding-ada-002")
-    # assert db.collection_metadata("test_openai_full_collection").model == "openai:text-embedding-ada-002"
-    # assert db.collection_metadata("test_openai_full_collection").hnsw_space == "cosine"
-    # assert db.collection_metadata("test_openai_full_collection").name == "test_openai_full_collection"
+    db.insert(objs, collection="test_openai_collection", model="openai:")
+    print(db.collection_metadata("test_openai_collection").model)
+    assert db.collection_metadata("test_openai_collection").model == "openai:"
+    assert db.collection_metadata("test_openai_collection").hnsw_space == "cosine"
+    assert db.collection_metadata("test_openai_collection").name == "test_openai_collection"
+    db.insert(objs, collection="test_openai_full_collection", model="openai:text-embedding-ada-002")
+    assert db.collection_metadata("test_openai_full_collection").model == "openai:text-embedding-ada-002"
+    assert db.collection_metadata("test_openai_full_collection").hnsw_space == "cosine"
+    assert db.collection_metadata("test_openai_full_collection").name == "test_openai_full_collection"
 
 
 @pytest.fixture
@@ -165,8 +165,6 @@ def test_ontology_matches(ontology_db):
     assert len(results) == 10
 
     first_obj = results[0][0]
-    print("the id", first_obj['id'])
-    first_meta = results[0][2]
     new_id, new_definition = "Palm Beach", "A beach with palm trees"
     updated_obj = {
         "id": new_id,
@@ -232,11 +230,7 @@ def test_load_in_batches(ontology_db, batch_size):
     adapter = get_adapter(str(INPUT_DIR / "go-nucleus.db"))
     view = OntologyWrapper(oak_adapter=adapter)
     ontology_db.text_lookup = view.text_field
-    # start = time.time()
     ontology_db.insert(view.objects(), batch_size=batch_size, collection="other_collection")
-    # end = time.time()
-    # print(f"Time to insert {len(list(view.objects()))} objects with batch of {batch_size}: {end - start}")
-
     objs = list(
         ontology_db.find(collection="other_collection", limit=2000
         )
