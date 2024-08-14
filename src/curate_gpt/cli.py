@@ -1278,6 +1278,8 @@ def complete_multiple(
 @main.command()
 @path_option
 @collection_option
+@database_type_option
+@docstore_database_type_option
 @model_option
 @limit_option
 @click.option(

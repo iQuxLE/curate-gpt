@@ -200,6 +200,7 @@ class DuckDBAdapter(DBAdapter):
         :param kwargs:
         :return:
         """
+        logger.info(f"\n\nIn insert duckdb, {kwargs.get('model')}\n\n")
         self._process_objects(objs, method="insert", **kwargs)
 
     # DELETE first to ensure primary key  constraint https://duckdb.org/docs/sql/indexes
@@ -214,7 +215,9 @@ class DuckDBAdapter(DBAdapter):
         ids = [self._id(o, self.id_field) for o in objs]
         safe_collection_name = f'"{collection}"'
         delete_sql = f"DELETE FROM {safe_collection_name} WHERE id = ?"
+        logger.info("DELETED collection: {collection}")
         self.conn.executemany(delete_sql, [(id_,) for id_ in ids])
+        logger.info(f"INSERTING collection: {collection}")
         self.insert(objs, **kwargs)
 
     def upsert(self, objs: Union[OBJECT, Iterable[OBJECT]], **kwargs):
@@ -240,9 +243,11 @@ class DuckDBAdapter(DBAdapter):
         objs_to_update = [o for o in objs if self._id(o, self.id_field) in existing_ids]
         objs_to_insert = [o for o in objs if self._id(o, self.id_field) not in existing_ids]
         if objs_to_update:
+            logger.info(f"in Upsert and updating now in collection: {collection}")
             self.update(objs_to_update, **kwargs)
 
         if objs_to_insert:
+            logger.info(f"in Upsert and inserting now in collection: {collection}")
             self.insert(objs_to_insert, **kwargs)
 
     def _process_objects(
@@ -290,6 +295,7 @@ class DuckDBAdapter(DBAdapter):
         sql_command = sql_command.format(collection=collection)
         for next_objs in chunk(objs, batch_size):
             next_objs = list(next_objs)
+            logger.info("Processing batch of objects in DuckDB process_objects ...")
             docs = [self._text(o, text_field) for o in next_objs]
             docs_len = sum([len(d) for d in docs])
             cumulative_len += docs_len
