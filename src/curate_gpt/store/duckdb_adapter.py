@@ -8,19 +8,15 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, ClassVar, Dict, Iterable, Iterator, List, Mapping, Optional, Union
+from typing import Any, Callable, ClassVar, Dict, Iterable, Iterator, List, Optional, Union
 
 import duckdb
 import llm
 import numpy as np
 import openai
 import psutil
-import yaml
-from linkml_runtime.dumpers import json_dumper
-from linkml_runtime.utils.yamlutils import YAMLRoot
 from oaklib.utilities.iterator_utils import chunk
 from openai import OpenAI
-from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer
 
 from curate_gpt.store.db_adapter import DBAdapter
@@ -48,17 +44,11 @@ logger = logging.getLogger(__name__)
 @dataclass
 class DuckDBAdapter(DBAdapter):
     name: ClassVar[str] = "duckdb"
-    default_model: str = "all-MiniLM-L6-v2"
     conn: duckdb.DuckDBPyConnection = field(init=False)
     vec_dimension: int = field(init=False)
     ef_construction: int = 128
     ef_search: int = 64
     M: int = 16
-    distance_metric: str = "cosine"
-    id_field: str = "id"
-    text_lookup: Optional[Union[str, Callable]] = field(default="text")
-    id_to_object: Mapping[str, dict] = field(default_factory=dict)
-    default_max_document_length: ClassVar[int] = 6000
     openai_client: OpenAI = field(default=None)
 
     def __post_init__(self):
@@ -71,9 +61,6 @@ class DuckDBAdapter(DBAdapter):
                 f"Path {self.path} is a directory. Using {self.path} as the database path\n\
             as duckdb needs a file path"
             )
-        self.ef_construction = self._validate_ef_construction(self.ef_construction)
-        self.ef_search = self._validate_ef_search(self.ef_search)
-        self.M = self._validate_m(self.M)
         logger.info(f"Using DuckDB at {self.path}")
         # handling concurrency
         try:
@@ -125,34 +112,20 @@ class DuckDBAdapter(DBAdapter):
         :return:
         """
         logger.info(
-            f"Table {collection} does not exist, creating ...: PARAMS: model: {model}, distance: {distance},\
+            f"Table {collection} does not exist, and is created with the following table metadata: model: {model}, distance: {distance},\
         vec_dimension: {vec_dimension}"
         )
         if model is None:
             model = self.default_model
-            logger.info(f"Model in create_table_if_not_exists: {model}")
+            logger.debug(f"Model in create_table_if_not_exists: {model}")
         if distance is None:
             distance = self.distance_metric
-        safe_collection_name = f'"{collection}"'
-        create_table_sql = f"""
-            CREATE TABLE IF NOT EXISTS {safe_collection_name} (
-                id VARCHAR PRIMARY KEY,
-                metadata JSON,
-                embeddings FLOAT[{vec_dimension}],
-                documents TEXT
-            )
-        """
-        self.conn.execute(create_table_sql)
 
-        metadata = CollectionMetadata(name=collection, model=model, hnsw_space=distance)
-        metadata_json = json.dumps(metadata.dict(exclude_none=True))
-        safe_collection_name = f'"{collection}"'
-        self.conn.execute(
-            f"""
-                    INSERT INTO {safe_collection_name} (id, metadata) VALUES ('__metadata__', ?)
-                    ON CONFLICT (id) DO NOTHING
-                    """,
-            [metadata_json],
+        self.create_collection(
+            collection=collection,
+            model=model,
+            vec_dimension=vec_dimension,
+            distance=distance,
         )
 
     def create_index(self, collection: str):
@@ -167,10 +140,10 @@ class DuckDBAdapter(DBAdapter):
 
         """
         cm = self.collection_metadata(collection)
-        safe_collection_name = f'"{collection}"'
+        sql_safe_collection_name = f'"{collection}"'
         index_name = f"{collection}_index"
         create_index_sql = f"""
-            CREATE INDEX IF NOT EXISTS "{index_name}" ON {safe_collection_name}
+            CREATE INDEX IF NOT EXISTS "{index_name}" ON {sql_safe_collection_name}
             USING HNSW (embeddings) WITH (
                 metric='{cm.hnsw_space}',
                 ef_construction={self.ef_construction},
@@ -239,8 +212,8 @@ class DuckDBAdapter(DBAdapter):
         """
         collection = kwargs.get("collection")
         ids = [self._id(o, self.id_field) for o in objs]
-        safe_collection_name = f'"{collection}"'
-        delete_sql = f"DELETE FROM {safe_collection_name} WHERE id = ?"
+        sql_safe_collection_name = f'"{collection}"'
+        delete_sql = f"DELETE FROM {sql_safe_collection_name} WHERE id = ?"
         logger.info("DELETED collection: {collection}")
         self.conn.executemany(delete_sql, [(id_,) for id_ in ids])
         logger.info(f"INSERTING collection: {collection}")
@@ -264,9 +237,9 @@ class DuckDBAdapter(DBAdapter):
         ids = [self._id(o, self.id_field) for o in objs]
         existing_ids = set()
         for id_ in ids:
-            safe_collection_name = f'"{collection}"'
+            sql_safe_collection_name = f'"{collection}"'
             result = self.conn.execute(
-                f"SELECT id FROM {safe_collection_name} WHERE id = ?", [id_]
+                f"SELECT id FROM {sql_safe_collection_name} WHERE id = ?", [id_]
             ).fetchall()
             if result:
                 existing_ids.add(id_)
@@ -305,11 +278,11 @@ class DuckDBAdapter(DBAdapter):
         :return:
         """
         collection = self._get_collection_name(collection)
-        logger.info(f"Processing objects for collection {collection}")
+        logger.debug(f"Processing objects for collection {collection}")
         self.vec_dimension = self._get_embedding_dimension(model)
-        logger.info(f"(process_objects: Model: {model}, vec_dimension: {self.vec_dimension}")
+        logger.debug(f"Model: {model}, vec_dimension: {self.vec_dimension}")
         if collection not in self.list_collection_names():
-            logger.info(f"(process)Creating table for collection {collection}")
+            logger.debug(f"Creating table for collection {collection}")
             self._create_table_if_not_exists(
                 collection, self.vec_dimension, model=model, distance=distance
             )
@@ -339,9 +312,6 @@ class DuckDBAdapter(DBAdapter):
                     self.conn.executemany(
                         sql_command, list(zip(ids, metadatas, embeddings, docs))  # noqa: B905
                     )
-                    # reason to block B905: codequality check
-                    # blocking 3.11 because only code quality issue and 3.9 gives value error with keyword strict
-                    # TODO: delete after PR#76 is merged
                     self.conn.execute("COMMIT;")
                 except Exception as e:
                     self.conn.execute("ROLLBACK;")
@@ -435,6 +405,55 @@ class DuckDBAdapter(DBAdapter):
                 finally:
                     self.create_index(collection)
 
+
+    def create_collection(self, collection: str = None, model: str = None, vec_dimension: int = None, distance: str = None):
+        """
+        Create a table with the given name. Metadata will be filled with default values from class DuckDBAdapter if not specified.
+        :param collection:
+        :param model:
+        :param vec_dimension:
+        :param distance:
+        :return:
+        """
+        if model is None:
+            model = self.default_model
+        if distance is None:
+            distance = self.distance_metric
+        if vec_dimension is None:
+            vec_dimension = self.vec_dimension
+        sql_safe_collection_name = f'"{collection}"'
+        # using default embedding function as in chroma "all-MiniLM-L6-v2"
+        self.conn.execute(f"""
+                CREATE TABLE IF NOT EXISTS {sql_safe_collection_name} (
+                id VARCHAR PRIMARY KEY,
+                metadata JSON,
+                embeddings FLOAT[{vec_dimension}],
+                documents TEXT
+            )
+        """)
+
+        metadata = CollectionMetadata(name=collection, model=model, hnsw_space=distance)
+        metadata_json = json.dumps(metadata.dict(exclude_none=True))
+        sql_safe_collection_name = f'"{collection}"'
+        self.conn.execute(
+            f"""
+                            INSERT INTO {sql_safe_collection_name} (id, metadata) VALUES ('__metadata__', ?)
+                            ON CONFLICT (id) DO NOTHING
+                            """,
+            [metadata_json],
+        )
+
+    def get(self, collection: str, include: List[str] = None, limit = None) -> Iterator[SEARCH_RESULT]:
+        if include is None:
+            include = {IDS, METADATAS}
+        else:
+            include = set(include)
+
+        sql_safe_collection_name = f"'{collection}'"
+        sql = f"""
+            SELECT * FROM {collection} LIMIT ?;   
+            """, [limit].fetchall()
+        
     def remove_collection(self, collection: str = None, exists_ok=False, **kwargs):
         """
         Remove the collection from the database
@@ -448,8 +467,8 @@ class DuckDBAdapter(DBAdapter):
             if collection not in self.list_collection_names():
                 raise ValueError(f"Collection {collection} does not exist")
         # duckdb, requires that identifiers containing special characters ("-") must be enclosed in double quotes.
-        safe_collection_name = f'"{collection}"'
-        self.conn.execute(f"DROP TABLE IF EXISTS {safe_collection_name}")
+        sql_safe_collection_name = f'"{collection}"'
+        self.conn.execute(f"DROP TABLE IF EXISTS {sql_safe_collection_name}")
 
     def search(
         self,
@@ -529,7 +548,7 @@ class DuckDBAdapter(DBAdapter):
             )
             return
         query_embedding = self._embedding_function(text, model)
-        safe_collection_name = f'"{collection}"'
+        sql_safe_collection_name = f'"{collection}"'
 
         vec_dimension = self._get_embedding_dimension(model)
 
@@ -543,7 +562,7 @@ class DuckDBAdapter(DBAdapter):
             f"""
             SELECT *, array_distance(embeddings::FLOAT[{vec_dimension}],
             {query_embedding}::FLOAT[{vec_dimension}]) as distance
-            FROM {safe_collection_name}
+            FROM {sql_safe_collection_name}
             {where_clause}
             ORDER BY distance
             LIMIT ?
@@ -576,13 +595,13 @@ class DuckDBAdapter(DBAdapter):
         if where_clause:
             where_clause = f"WHERE {where_clause}"
         query_embedding = self._embedding_function(text, model=cm.model)
-        safe_collection_name = f'"{collection}"'
+        sql_safe_collection_name = f'"{collection}"'
         vec_dimension = self._get_embedding_dimension(cm.model)
         results = self.conn.execute(
             f"""
                     SELECT *, array_distance(embeddings::FLOAT[{vec_dimension}],
                     {query_embedding}::FLOAT[{vec_dimension}]) as distance
-                    FROM {safe_collection_name}
+                    FROM {sql_safe_collection_name}
                     {where_clause}
                     ORDER BY distance
                     LIMIT ?
@@ -619,10 +638,10 @@ class DuckDBAdapter(DBAdapter):
         :return:
         """
         collection_name = self._get_collection(collection_name)
-        safe_collection_name = f'"{collection_name}"'
+        sql_safe_collection_name = f'"{collection_name}"'
         try:
             result = self.conn.execute(
-                f"SELECT metadata FROM {safe_collection_name} WHERE id = '__metadata__'"
+                f"SELECT metadata FROM {sql_safe_collection_name} WHERE id = '__metadata__'"
             ).fetchone()
             if result:
                 metadata = json.loads(result[0])
@@ -656,10 +675,10 @@ class DuckDBAdapter(DBAdapter):
                     setattr(current_metadata, key, value)
         metadata_dict = current_metadata.dict(exclude_none=True)
         metadata_json = json.dumps(metadata_dict)
-        safe_collection_name = f'"{collection}"'
+        sql_safe_collection_name = f'"{collection}"'
         self.conn.execute(
             f"""
-                UPDATE {safe_collection_name} SET metadata = ?
+                UPDATE {sql_safe_collection_name} SET metadata = ?
                 WHERE id = '__metadata__'
                 """,
             [metadata_json],
@@ -680,10 +699,10 @@ class DuckDBAdapter(DBAdapter):
             raise ValueError("Collection name must be provided.")
 
         metadata_json = json.dumps(metadata.dict(exclude_none=True))
-        safe_collection_name = f'"{collection_name}"'
+        sql_safe_collection_name = f'"{collection_name}"'
         self.conn.execute(
             f"""
-            UPDATE {safe_collection_name}
+            UPDATE {sql_safe_collection_name}
             SET metadata = ?
             WHERE id = '__metadata__'
             """,
@@ -718,10 +737,10 @@ class DuckDBAdapter(DBAdapter):
         where_clause = f"WHERE {where_clause}" if where_clause else ""
         if include is None:
             include = [IDS, METADATAS, DOCUMENTS]
-        safe_collection_name = f'"{collection}"'
+        sql_safe_collection_name = f'"{collection}"'
         query = f"""
                     SELECT id, metadata, embeddings, documents, NULL as distance
-                    FROM {safe_collection_name}
+                    FROM {sql_safe_collection_name}
                     {where_clause}
                     LIMIT {limit}
                 """
@@ -760,11 +779,11 @@ class DuckDBAdapter(DBAdapter):
             include = {METADATAS}
         else:
             include = set(include)
-        safe_collection_name = f'"{collection}"'
+        sql_safe_collection_name = f'"{collection}"'
         result = self.conn.execute(
             f"""
                 SELECT *
-                FROM {safe_collection_name}
+                FROM {sql_safe_collection_name}
                 WHERE id = ?
             """,
             [id],
@@ -795,11 +814,11 @@ class DuckDBAdapter(DBAdapter):
             include = {IDS, METADATAS, DOCUMENTS}
         else:
             include = set(include)
-        safe_collection_name = f'"{collection}"'
+        sql_safe_collection_name = f'"{collection}"'
         results = self.conn.execute(
             f"""
                 SELECT id, metadata, embeddings, documents, NULL as distance
-                FROM {safe_collection_name}
+                FROM {sql_safe_collection_name}
                 LIMIT ?
             """,
             [limit],
@@ -807,9 +826,8 @@ class DuckDBAdapter(DBAdapter):
 
         yield from self.parse_duckdb_result(results, include)
 
-    def fetch_all_objects_memory_safe(
-        self, collection: str = None, batch_size: int = 100, include=None, **kwargs
-    ) -> Iterator[OBJECT]:
+    def fetch_all_objects_memory_safe(self, collection: str = None, batch_size: int = 100, include=None, **kwargs) -> Iterator[
+        OBJECT]:
         """
         Fetch all objects from a collection, in batches to avoid memory overload.
         """
@@ -817,11 +835,13 @@ class DuckDBAdapter(DBAdapter):
         offset = 0
         while True:
             if include is None:
-                include = [IDS, METADATAS, DOCUMENTS, EMBEDDINGS]
-            safe_collection_name = f'"{collection}"'
+                include = {IDS, METADATAS, DOCUMENTS, EMBEDDINGS}
+            else:
+                include = set(include)
+            sql_safe_collection_name = f'"{collection}"'
             query = f"""
-                                SELECT id, metadata, embeddings, documents, NULL as distance
-                                FROM {safe_collection_name}
+                                SELECT *
+                                FROM {sql_safe_collection_name}
                                 LIMIT ? OFFSET ?
                             """
             results = self.conn.execute(query, [batch_size, offset]).fetchall()
@@ -831,17 +851,18 @@ class DuckDBAdapter(DBAdapter):
             else:
                 break
 
+
     def get_raw_objects(self, collection) -> Iterator[Dict]:
         """
-        Get all raw objects in the collection as they were inserted into the database
+        Get all raw objects (metadata) in the collection as they were inserted into the database
         :param collection:
         :return:
         """
-        safe_collection_name = f'"{collection}"'
+        sql_safe_collection_name = f'"{collection}"'
         results = self.conn.execute(
             f"""
                 SELECT metadata
-                FROM {safe_collection_name}
+                FROM {sql_safe_collection_name}
             """
         ).fetchall()
         for result in results:
@@ -905,10 +926,10 @@ class DuckDBAdapter(DBAdapter):
 
     @staticmethod
     def _generate_sql_command(collection: str, method: str) -> str:
-        safe_collection_name = f'"{collection}"'
+        sql_safe_collection_name = f'"{collection}"'
         if method == "insert":
             return f"""
-                INSERT INTO {safe_collection_name} (id,metadata, embeddings, documents) VALUES (?, ?, ?, ?)
+                INSERT INTO {sql_safe_collection_name} (id,metadata, embeddings, documents) VALUES (?, ?, ?, ?)
                 """
         else:
             raise ValueError(f"Unknown method: {method}")
@@ -920,8 +941,8 @@ class DuckDBAdapter(DBAdapter):
         :return:
         """
         collection = self._get_collection(collection)
-        safe_collection_name = f'"{collection}"'
-        query = f"SELECT metadata FROM {safe_collection_name} WHERE id = '__metadata__'"
+        sql_safe_collection_name = f'"{collection}"'
+        query = f"SELECT metadata FROM {sql_safe_collection_name} WHERE id = '__metadata__'"
         result = self.conn.execute(query).fetchone()
         if result:
             metadata = json.loads(result[0])
@@ -929,59 +950,6 @@ class DuckDBAdapter(DBAdapter):
                 return True
         return False
 
-    def _dict(self, obj: OBJECT):
-        if isinstance(obj, dict):
-            return obj
-        elif isinstance(obj, BaseModel):
-            return obj.model_dump(exclude_unset=True)
-        elif isinstance(obj, YAMLRoot):
-            return json_dumper.to_dict(obj)
-        else:
-            raise ValueError(f"Cannot convert {obj} to dict")
-
-    def _id(self, obj, id_field):
-        if isinstance(obj, dict):
-            id = obj.get(id_field, None)
-        else:
-            id = getattr(obj, id_field, None)
-        if not id:
-            id = str(obj)
-        self.id_to_object[id] = obj
-        return id
-
-    def _text(self, obj: OBJECT, text_field: Union[str, Callable]):
-        if isinstance(obj, DuckDBSearchResult):
-            obj = obj.dict()
-        if isinstance(obj, list):
-            raise ValueError(f"Cannot handle list of text fields: {obj}")
-        if text_field is None or (isinstance(text_field, str) and text_field not in obj):
-            obj = {k: v for k, v in obj.items() if v}
-            t = yaml.safe_dump(obj, sort_keys=False)
-        elif isinstance(text_field, Callable):
-            t = text_field(obj)
-        elif isinstance(obj, dict):
-            t = obj[text_field]
-        else:
-            t = getattr(obj, text_field)
-        t = t.strip()
-        if not t:
-            raise ValueError(f"Text field {text_field} is empty for {type(obj)} : {obj}")
-        if len(t) > self.default_max_document_length:
-            logger.warning(f"Truncating text field {text_field} for {str(obj)[0:100]}...")
-            t = t[: self.default_max_document_length]
-        return t
-
-    def identifier_field(self, collection: str = None) -> str:
-        if self.schema_proxy and self.schema_proxy.schemaview:
-            fields = []
-            for s in self.schema_proxy.schemaview.all_slots(attributes=True).values():
-                if s.identifier:
-                    fields.append(s.name)
-            if fields:
-                if len(fields) > 1:
-                    raise ValueError(f"Multiple identifier fields: {fields}")
-                return fields[0]
-        return "id"
 
     @staticmethod
     def parse_duckdb_result(results, include) -> Iterator[SEARCH_RESULT]:
@@ -1069,73 +1037,3 @@ class DuckDBAdapter(DBAdapter):
                 return model_info[1]
             else:
                 return MODEL_MAP[DEFAULT_OPENAI_MODEL][1]
-
-    @staticmethod
-    def _validate_ef_construction(value: int) -> int:
-        """
-        The number of candidate vertices to consider during the construction of the index. A higher value will result
-        in a more accurate index, but will also increase the time it takes to build the index.
-        Parameters
-        ----------
-        value
-
-        Returns
-        -------
-
-        """
-        if not (10 <= value <= 200):
-            raise ValueError("ef_construction must be between 10 and 200")
-        return value
-
-    @staticmethod
-    def _validate_ef_search(value: int) -> int:
-        """
-        The number of candidate vertices to consider during the search phase of the index.
-        A higher value will result in a more accurate index, but will also increase the time it takes to perform a search.
-        Parameters
-        ----------
-        value
-
-        Returns
-        -------
-
-        """
-        if not (10 <= value <= 200):
-            raise ValueError("ef_search must be between 10 and 200")
-        return value
-
-    @staticmethod
-    def _validate_m(value: int) -> int:
-        """
-        The maximum number of neighbors to keep for each vertex in the graph.
-        A higher value will result in a more accurate index, but will also increase the time it takes to build the index.
-        Parameters
-        ----------
-        value
-
-        Returns
-        -------
-
-        """
-        if not (5 <= value <= 48):
-            raise ValueError("M must be between 5 and 48")
-        return value
-
-    @staticmethod
-    def determine_fields_to_include(include: Optional[List[str]] = None) -> str:
-        """
-        Determine which fields to include in the SQL query based on the 'include' parameter.
-
-        :param include: List of fields to include in the output ['metadata', 'embeddings', 'documents']
-        :return: Comma-separated string of fields to include
-        """
-        fields = []
-        if include is None or IDS in include:
-            fields.append(IDS)
-        if include is None or METADATAS in include:
-            fields.append(METADATAS)
-        if include is None or EMBEDDINGS in include:
-            fields.append(EMBEDDINGS)
-        if include is None or DOCUMENTS in include:
-            fields.append(DOCUMENTS)
-        return ", ".join(fields)

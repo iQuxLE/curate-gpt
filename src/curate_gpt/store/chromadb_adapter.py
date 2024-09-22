@@ -4,20 +4,16 @@ import json
 import logging
 import os
 import time
-from dataclasses import dataclass, field
-from typing import Callable, ClassVar, Iterable, Iterator, List, Mapping, Optional, Union
+from dataclasses import dataclass
+from typing import Callable, ClassVar, Iterable, Iterator, List, Mapping, Optional, Union, Literal
 
 import chromadb
-import yaml
 from chromadb import ClientAPI as API
 from chromadb import Settings
 from chromadb.api import EmbeddingFunction
 from chromadb.types import Collection
 from chromadb.utils import embedding_functions
-from linkml_runtime.dumpers import json_dumper
-from linkml_runtime.utils.yamlutils import YAMLRoot
 from oaklib.utilities.iterator_utils import chunk
-from pydantic import BaseModel
 
 from curate_gpt.store.db_adapter import DBAdapter
 from curate_gpt.store.metadata import CollectionMetadata
@@ -34,13 +30,7 @@ class ChromaDBAdapter(DBAdapter):
     """
 
     name: ClassVar[str] = "chromadb"
-    default_model = "all-MiniLM-L6-v2"
     client: API = None
-    id_field: str = field(default="id")
-    text_lookup: Optional[Union[str, Callable]] = field(default="text")
-    id_to_object: Mapping[str, OBJECT] = field(default_factory=dict)
-
-    default_max_document_length: ClassVar[int] = 6000  # TODO: use tiktoken
 
     def __post_init__(self):
         if not self.path:
@@ -52,47 +42,15 @@ class ChromaDBAdapter(DBAdapter):
         logger.info(f"ChromaDB client: {self.client}")
 
     def _get_collection_object(self, collection: str = None):
-        return self.client.get_collection(name=self._get_collection(collection))
+        # TODO: is this logic necessary? does it make sense?
+        try:
+            self.client.get_collection(name=self._get_collection(collection))
+        except Exception as e:
+            if e == f"Collection {collection} does not exist.":
+                self.create_collection(collection)
+        finally:
+            self.client.get_collection(name=self._get_collection(collection))
 
-    def _text(self, obj: OBJECT, text_field: Union[str, Callable]):
-        if isinstance(obj, list):
-            raise ValueError(f"Cannot handle list of text fields: {obj}")
-        if text_field is None or (isinstance(text_field, str) and text_field not in obj):
-            obj = {k: v for k, v in obj.items() if v}
-            t = yaml.safe_dump(obj, sort_keys=False)
-        elif isinstance(text_field, Callable):
-            t = text_field(obj)
-        elif isinstance(obj, dict):
-            t = obj[text_field]
-        else:
-            t = getattr(obj, text_field)
-        t = t.strip()
-        if not t:
-            raise ValueError(f"Text field {text_field} is empty for {type(obj)} : {obj}")
-        if len(t) > self.default_max_document_length:
-            logger.warning(f"Truncating text field {text_field} for {str(obj)[0:100]}...")
-            t = t[: self.default_max_document_length]
-        return t
-
-    def _id(self, obj: OBJECT, id_field: str):
-        if isinstance(obj, dict):
-            id = obj.get(id_field, None)
-        else:
-            id = getattr(obj, id_field, None)
-        if not id:
-            id = str(obj)
-        self.id_to_object[id] = obj
-        return id
-
-    def _dict(self, obj: OBJECT):
-        if isinstance(obj, dict):
-            return obj
-        elif isinstance(obj, BaseModel):
-            return obj.dict(exclude_unset=True)
-        elif isinstance(obj, YAMLRoot):
-            return json_dumper.to_dict(obj)
-        else:
-            raise ValueError(f"Cannot convert {obj} to dict")
 
     def _object_metadata(self, obj: OBJECT):
         """
@@ -232,6 +190,27 @@ class ChromaDBAdapter(DBAdapter):
         """
         self._insert_or_update(objs, method_name="upsert", **kwargs)
 
+    def create_collection(self, collection: str = None, model: str = None, distance: int = None):
+        """
+        Create a collection
+        :param collection:
+        :return:
+        """
+        if model is None:
+            model = self.default_model
+        if distance is None:
+            distance = self.distance_metric
+        cm = self.collection_metadata(collection)
+        if model is None:
+            if cm:
+                model = cm.model
+            if model is None:
+                model = self.default_model
+        cm = self.update_collection_metadata(collection_name=collection, model=model, hnsw_space=distance)
+        ef = self._embedding_function(model=cm.model)
+        cm = cm.model_dump(exclude_none=True)
+        self.client.create_collection(name=collection, embedding_function=ef, metadata=cm)
+
     def remove_collection(self, collection: str = None, exists_ok=False, **kwargs):
         """
         Remove a collection from the database.
@@ -313,6 +292,9 @@ class ChromaDBAdapter(DBAdapter):
             prev_model = metadata.model
             metadata = metadata.copy(update=kwargs)
             if prev_model and metadata.model != prev_model:
+                # if in index (json file in cli) select no model
+                #     raise ValueError(f"Cannot change model from {prev_model} to {metadata.model}")
+                # ValueError: Cannot change model from all-MiniLM-L6-v2 to None
                 if self.client.get_or_create_collection(name=collection_name).count() > 0:
                     raise ValueError(f"Cannot change model from {prev_model} to {metadata.model}")
                 else:
@@ -324,7 +306,7 @@ class ChromaDBAdapter(DBAdapter):
             assert metadata.name == collection_name
         else:
             metadata.name = collection_name
-        metadata.hnsw_space = "cosine"
+        metadata.hnsw_space = self.distance_metric
         self.client.get_or_create_collection(
             name=collection_name, metadata=metadata.dict(exclude_none=True)
         )
@@ -536,8 +518,11 @@ class ChromaDBAdapter(DBAdapter):
         for i in range(0, len(metadatas)):
             yield self._unjson(metadatas[i])
 
+
+    # TODO: include type should be List[Union[Literal]]
+    #       TypeError: Plain typing.Literal is not valid as type argument
     def fetch_all_objects_memory_safe(
-        self, collection: str = None, batch_size: int = 100, **kwargs
+        self, collection: str = None, batch_size: int = 100, include: List[any] = None, **kwargs
     ) -> Iterator[OBJECT]:
         """
         Fetch all objects from a collection, in batches to avoid memory overload.
@@ -546,10 +531,14 @@ class ChromaDBAdapter(DBAdapter):
         client = self.client
         collection_obj = client.get_collection(name=self._get_collection(collection))
         while True:
+            if include is None:
+                include=["metadatas", "embeddings", "documents"]
+            else:
+                include = include
             results = collection_obj.get(
                 offset=offset,
                 limit=batch_size,
-                include=["metadatas", "embeddings", "documents"],
+                include=include,
                 **kwargs,
             )
             logger.info(f"Fetching batch from {offset}...")

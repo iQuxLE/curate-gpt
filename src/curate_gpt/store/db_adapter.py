@@ -3,14 +3,28 @@
 import json
 import logging
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import ClassVar, Dict, Iterable, Iterator, List, Optional, TextIO, Union
+from typing import (
+    Callable,
+    ClassVar,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    TextIO,
+    Union,
+)
 
 import pandas as pd
 import yaml
 from click.utils import LazyFile
 from jsonlines import jsonlines
+from linkml_runtime.dumpers import json_dumper
+from linkml_runtime.utils.yamlutils import YAMLRoot
+from pydantic import BaseModel
 
 from curate_gpt.store.metadata import CollectionMetadata
 from curate_gpt.store.schema_proxy import SchemaProxy
@@ -25,6 +39,7 @@ from curate_gpt.store.vocab import (
     QUERY,
     SEARCH_RESULT,
 )
+
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +105,24 @@ class DBAdapter(ABC):
 
     # _field_names_by_collection: Dict[str, Optional[List[str]]] = field(default_factory=dict)
     _field_names_by_collection: Dict[str, Optional[List[str]]] = None
+
+    distance_metric: str = "cosine"
+    """Default distance metric"""
+
+    default_model = "all-MiniLM-L6-v2"
+    """Default model"""
+
+    id_field: str = field(default="id")
+    """ID to search for in object to insert"""
+
+    text_lookup: Optional[Union[str, Callable]] = field(default="text")
+    """Text to embed"""
+
+    id_to_object: Mapping[str, OBJECT] = field(default_factory=dict)
+    """if no id full obj is id"""
+
+    default_max_document_length: ClassVar[int] = 6000  # TODO: use tiktoken
+    """max document length for text to embed (differently handled in duckdb - optimised with tokenizer)"""
 
     # CUD operations
 
@@ -184,6 +217,15 @@ class DBAdapter(ABC):
             return self.collection
         else:
             return DEFAULT_COLLECTION
+
+    @abstractmethod
+    def create_collection(self, collection: str = None, **kwargs):
+        """
+        Create a collection on the current DB instance
+        :param collection:
+        :return:
+        """
+        raise NotImplementedError
 
     def remove_collection(self, collection: str = None, exists_ok=False, **kwargs):
         """
@@ -330,7 +372,7 @@ class DBAdapter(ABC):
         raise NotImplementedError
 
     # Schema operations
-
+    # thats basically get() from chroma
     @abstractmethod
     def fetch_all_objects_memory_safe(
         self, collection: str = None, batch_size: int = 100, **kwargs
@@ -388,6 +430,46 @@ class DBAdapter(ABC):
             logger.debug(f"Using cached field names for {collection}")
         return self._field_names_by_collection[collection]
 
+    def _text(self, obj: OBJECT, text_field: Union[str, Callable]):
+        if isinstance(obj, list):
+            raise ValueError(f"Cannot handle list of text fields: {obj}")
+        if text_field is None or (isinstance(text_field, str) and text_field not in obj):
+            obj = {k: v for k, v in obj.items() if v}
+            t = yaml.safe_dump(obj, sort_keys=False)
+        elif isinstance(text_field, Callable):
+            t = text_field(obj)
+        elif isinstance(obj, dict):
+            t = obj[text_field]
+        else:
+            t = getattr(obj, text_field)
+        t = t.strip()
+        if not t:
+            raise ValueError(f"Text field {text_field} is empty for {type(obj)} : {obj}")
+        if len(t) > self.default_max_document_length:
+            logger.warning(f"Truncating text field {text_field} for {str(obj)[0:100]}...")
+            t = t[: self.default_max_document_length]
+        return t
+
+    def _id(self, obj: OBJECT, id_field: str):
+        if isinstance(obj, dict):
+            id = obj.get(id_field, None)
+        else:
+            id = getattr(obj, id_field, None)
+        if not id:
+            id = str(obj)
+        self.id_to_object[id] = obj
+        return id
+
+    def _dict(self, obj: OBJECT):
+        if isinstance(obj, dict):
+            return obj
+        elif isinstance(obj, BaseModel):
+            return obj.dict(exclude_unset=True)
+        elif isinstance(obj, YAMLRoot):
+            return json_dumper.to_dict(obj)
+        else:
+            raise ValueError(f"Cannot convert {obj} to dict")
+
     # Loading and dumping
     def dump(
         self,
@@ -407,7 +489,7 @@ class DBAdapter(ABC):
         """
         collection_name = collection
         collection = self._get_collection(collection)
-        logger.info(f"Dumping collection {self.collection_metadata(collection) }")
+        logger.debug(f"Dumping collection {self.collection_metadata(collection) }")
         metadata = self.collection_metadata(collection).model_dump(exclude_none=True)
         if format is None:
             format = "json"
@@ -485,3 +567,15 @@ class DBAdapter(ABC):
         :return:
         """
         raise NotImplementedError
+
+    # def dump_file_to_db(self, collection, file, **kwargs):
+    #     with open(file, "r") as f:
+    #         yaml.dump(f)
+    #     # the way it works now: cause it uses Metadata object from store wich is i think not correct
+    #     db = get_store()
+    #     # need FileWrapper or needs to understand from structure what it is, maybe JsonWrapper ? maybe YamlWrapper
+    #     # or OntologyWrapper, so maybe just BaseWrapper
+    #     filewrapper = FilesystemWrapper(local_store=db, extractor=)
+
+
+

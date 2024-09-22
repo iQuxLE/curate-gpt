@@ -113,6 +113,9 @@ class InMemoryAdapter(DBAdapter):
 
     # Collection operations
 
+    def create_collection(self, collection, **kwargs):
+        raise NotImplementedError
+
     def remove_collection(self, collection: str = None, exists_ok=False, **kwargs):
         """
         Remove a collection from the database.
