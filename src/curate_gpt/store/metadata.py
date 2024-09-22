@@ -1,35 +1,21 @@
 from typing import Dict, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import ConfigDict
+from venomx.model.venomx import Index,Prefix, Dataset, Embedding, NamedObject, MetadataObject, ModelInputMethod, Model
 
 
-class CollectionMetadata(BaseModel):
+class CollectionMetadata(Index, Embedding, Dataset, Prefix, NamedObject, MetadataObject, ModelInputMethod, Model):
     """
     Metadata about a collection.
-
+    Inherits from venomx.
     This is an open class, so additional metadata can be added.
     """
-
-    model_config = ConfigDict(protected_namespaces=())
-
-    name: Optional[str] = None
-    """Name of the collection"""
 
     description: Optional[str] = None
     """Description of the collection"""
 
-    model: Optional[str] = None
-    """Name of any ML model"""
-
     object_type: Optional[str] = None
     """Type of object in the collection"""
-
-    source: Optional[str] = None
-    """Source of the collection"""
-
-    # DEPRECATED
-    annotations: Optional[Dict] = None
-    """Additional metadata"""
 
     object_count: Optional[int] = None
     """Number of objects in the collection"""
