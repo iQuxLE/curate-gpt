@@ -58,6 +58,8 @@ class VenomXMetadata(BaseModel):
     """embedded fields"""
     dataset: Optional[Dataset] = Field(None, description="""Dataset for the collection""")
     """Dataset for the collection"""
+    objects: Optional[List[NamedObject]]
+    """Objects inside collection"""
 
     object_type: Optional[str]
     """Type of object in the collection"""
