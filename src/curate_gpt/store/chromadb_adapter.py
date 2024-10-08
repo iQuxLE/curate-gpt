@@ -17,10 +17,11 @@ from chromadb.utils import embedding_functions
 from linkml_runtime.dumpers import json_dumper
 from linkml_runtime.utils.yamlutils import YAMLRoot
 from oaklib.utilities.iterator_utils import chunk
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
+from venomx.model.venomx import ModelInputMethod, Model, Index, Dataset
 
 from curate_gpt.store.db_adapter import DBAdapter
-from curate_gpt.store.metadata import CollectionMetadata
+from curate_gpt.store.metadata import Metadata
 from curate_gpt.store.vocab import OBJECT, PROJECTION, QUERY, SEARCH_RESULT
 from curate_gpt.utils.vector_algorithms import mmr_diversified_search
 
@@ -34,7 +35,7 @@ class ChromaDBAdapter(DBAdapter):
     """
 
     name: ClassVar[str] = "chromadb"
-    default_model = "all-MiniLM-L6-v2"
+    default_model: str = "all-MiniLM-L6-v2"
     client: API = None
     id_field: str = field(default="id")
     text_lookup: Optional[Union[str, Callable]] = field(default="text")
@@ -111,6 +112,13 @@ class ChromaDBAdapter(DBAdapter):
             k: v for k, v in dict_obj.items() if not isinstance(v, (dict, list)) and v is not None
         }
 
+    def _serialize_venomx_metadata(self, obj: OBJECT):
+        dict_obj = self._dict(obj)
+        dict_obj["_venomx"] = json.dumps(dict_obj)
+        return {
+            k: v for k, v in dict_obj.items() if not isinstance(v, (dict, list)) and v is not None
+        }
+
     def reset(self):
         """
         Reset/delete the database.
@@ -149,6 +157,7 @@ class ChromaDBAdapter(DBAdapter):
         object_type: str = None,
         model: str = None,
         text_field: Union[str, Callable] = None,
+        venomx: Optional[Metadata] = None,
         **kwargs,
     ):
         """
@@ -161,20 +170,27 @@ class ChromaDBAdapter(DBAdapter):
         """
         client = self.client
         collection = self._get_collection(collection)
-        cm = self.collection_metadata(collection)
+        cm = self.collection_metadata(collection, **kwargs)
+        if venomx:
+            cm.venomx = venomx
         if model is None:
-            if cm:
-                model = cm.model
+            if cm and cm.venomx and cm.venomx.embedding_model:
+                model = cm.venomx.embedding_model
             if model is None:
                 model = self.default_model
-        cm = self.update_collection_metadata(collection, model=model, object_type=object_type)
-        ef = self._embedding_function(cm.model)
-        # cm = CollectionMetadata(name=collection, model=self.model, object_type=object_type)
-        cm_dict = cm.dict(exclude_none=True)
+
+        cm = self.update_collection_metadata(
+            collection,
+            model=model,
+            object_type=object_type,
+            venomx=venomx
+        )
+        ef = self._embedding_function(cm.venomx.embedding_model.name)
+        adapter_metadata = cm.to_adapter_metadata(self.name)
         collection_obj = client.get_or_create_collection(
             name=collection,
             embedding_function=ef,
-            metadata=cm_dict,
+            metadata=adapter_metadata,
         )
         if self._is_openai(collection_obj) and batch_size is None:
             # TODO: see https://github.com/chroma-core/chroma/issues/709
@@ -261,7 +277,7 @@ class ChromaDBAdapter(DBAdapter):
 
     def collection_metadata(
         self, collection_name: Optional[str] = None, include_derived=False, **kwargs
-    ) -> Optional[CollectionMetadata]:
+    ) -> Optional[Metadata]:
         """
         Get the metadata for a collection.
 
@@ -275,16 +291,30 @@ class ChromaDBAdapter(DBAdapter):
         try:
             logger.info(f"Getting collection object {collection_name}")
             collection_obj = self.client.get_collection(name=collection_name)
-        except Exception:
+        except Exception as e:
+            logger.error(f"Failed to get collection {collection_name}: {e}")
             return None
-        cm = CollectionMetadata(**collection_obj.metadata)
+
+        metadata_data = {**collection_obj.metadata, **kwargs}
+
+        # Initialize Metadata instance based on the adapter
+        try:
+            cm = Metadata.from_adapter_metadata(metadata_data, self.name)
+        except ValidationError as ve:
+            logger.error(f"Metadata validation error: {ve}")
+            cm = Metadata()
+
         if include_derived:
-            logger.info(f"Getting object count for {collection_name}")
-            cm.object_count = collection_obj.count()
+            try:
+                logger.info(f"Getting object count for {collection_name}")
+                cm.object_count = collection_obj.count()
+            except Exception as e:
+                logger.error(f"Failed to get object count: {e}")
+
         return cm
 
     def set_collection_metadata(
-        self, collection_name: Optional[str], metadata: CollectionMetadata, **kwargs
+        self, collection_name: Optional[str], metadata: Metadata, **kwargs
     ):
         """
         Set the metadata for a collection.
@@ -294,41 +324,69 @@ class ChromaDBAdapter(DBAdapter):
         :return:
         """
         self.update_collection_metadata(
-            collection_name=collection_name, **metadata.dict(exclude_none=True)
+            collection_name=collection_name, **metadata.model_dump(exclude_none=True)
         )
 
-    def update_collection_metadata(self, collection_name: str, **kwargs) -> CollectionMetadata:
+    def update_collection_metadata(self, collection_name: str, **kwargs) -> Metadata:
         """
-        Update the metadata for a collection.
+        Update the metadata for a collection based on the adapter.
 
-        :param collection_name:
-        :param kwargs:
-        :return:
+        :param collection_name: Name of the collection.
+        :param adapter: Adapter name (e.g., 'chroma', 'duckdb').
+        :param kwargs: Additional metadata fields.
+        :return: Updated Metadata instance.
         """
         collection_name = self._get_collection(collection_name)
+        logger.info(f"Updating metadata for collection: {collection_name} with adapter: {self.name}")
         metadata = self.collection_metadata(collection_name=collection_name)
-        if metadata is None:
-            metadata = CollectionMetadata(**kwargs)
+
+        if metadata is not None:
+            scalar_updates = {k: v for k, v in kwargs.items() if k != "venomx"}
+            metadata = metadata.model_copy(update=scalar_updates)
+
+            # Handle 'venomx' if provided
+            if "venomx" in kwargs and kwargs.get("venomx") is not None:
+                metadata.venomx = kwargs.get("venomx")
         else:
-            prev_model = metadata.model
-            metadata = metadata.copy(update=kwargs)
-            if prev_model and metadata.model != prev_model:
-                if self.client.get_or_create_collection(name=collection_name).count() > 0:
-                    raise ValueError(f"Cannot change model from {prev_model} to {metadata.model}")
-                else:
-                    logger.info(
-                        f"Changing (empty collection) model from {prev_model} to {metadata.model}"
-                    )
-        # self.set_collection_metadata(collection_name=collection_name, metadata=metadata)
-        if metadata.name:
-            assert metadata.name == collection_name
-        else:
-            metadata.name = collection_name
+            metadata = Metadata(
+                venomx=kwargs.get("venomx"),
+                hnsw_space=kwargs.get("hnsw_space", "cosine"),
+                object_type=kwargs.get("object_type"),
+            )
+
+        # Ensure 'venomx.id' matches 'collection_name' if venomx is provided
+        if metadata.venomx:
+            if metadata.venomx.id:
+                assert metadata.venomx.id == collection_name, "venomx.id must match collection_name"
+            else:
+                metadata.venomx.id = collection_name
+
         metadata.hnsw_space = "cosine"
+        # Convert to adapter-specific metadata
+        chromadb_metadata = metadata.to_adapter_metadata(self.name)
         self.client.get_or_create_collection(
-            name=collection_name, metadata=metadata.dict(exclude_none=True)
+            name=collection_name,
+            metadata=chromadb_metadata
         )
+
         return metadata
+
+    def get_metadata(self, collection_name: str) -> Optional[Metadata]:
+        """
+        Retrieve full metadata, including the deserialized 'venomx' object.
+
+        :param collection_name: Name of the collection.
+        :return: Metadata instance with 'venomx' populated.
+        """
+        try:
+            collection_obj = self.client.get_collection(name=collection_name)
+        except Exception as e:
+            logger.error(f"Failed to get collection {collection_name}: {e}")
+            return None
+
+        metadata_dict = collection_obj.metadata
+        cm = Metadata.from_chromadb_metadata(metadata_dict)
+        return cm
 
     def search(self, text: str, **kwargs) -> Iterator[SEARCH_RESULT]:
         yield from self._search(text=text, **kwargs)
@@ -589,13 +647,13 @@ class ChromaDBAdapter(DBAdapter):
         if not isinstance(target, ChromaDBAdapter):
             raise ValueError("Target must be a ChromaDBAdapter")
         cm = self.collection_metadata(collection)
-        ef = self._embedding_function(cm.model)
+        ef = self._embedding_function(cm.embedding_model)
         # this currently prevents interadapter copying (duck to chroma)
         # target.get_collection (abstract) should be implemented
         target_collection_obj = target.client.get_or_create_collection(
             name=collection,
             embedding_function=ef,
-            metadata=cm.dict(exclude_none=True),
+            metadata=cm.model_dump(exclude_none=True),
         )
         result = collection_obj.get(include=["metadatas", "documents", "embeddings"])
         if not result["ids"]:

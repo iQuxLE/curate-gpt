@@ -1,11 +1,15 @@
 import logging
+from pathlib import Path
 from pprint import pprint
 
 import pytest
 from oaklib import get_adapter
 from oaklib.datamodels.obograph import GraphDocument
+from venomx.model.venomx import Index, Dataset, Model, ModelInputMethod
 
+from curate_gpt.app.app import collection
 from curate_gpt.extract import BasicExtractor
+from curate_gpt.store.metadata import Metadata
 from curate_gpt.wrappers.ontology.ontology_wrapper import OntologyWrapper
 from tests import INPUT_DIR, OUTPUT_DIR
 from tests.store.conftest import requires_openai_api_key
@@ -21,6 +25,38 @@ logging.basicConfig()
 logger = logging.root
 logger.setLevel(logging.DEBUG)
 
+def test_object():
+    db = setup_db(Path("../db"))
+    collection_name = db._get_collection()
+    extractor = BasicExtractor()
+    adapter = get_adapter(INPUT_DIR / "go-nucleus.db")
+    wrapper = OntologyWrapper(oak_adapter=adapter, local_store=db, extractor=extractor)
+
+    venomx = Index(
+        id=f"{collection_name}",
+        dataset=Dataset(
+            name="test_ont_hp"
+        ),
+        embedding_model=Model(
+            name=db.default_model
+        ),
+        embedding_input_method=ModelInputMethod(
+            fields=['label']
+        )
+    )
+
+
+    db.insert(
+        wrapper.objects(),
+        collection=collection_name,
+        venomx=venomx
+    )
+    names = db.list_collection_names()
+    print(names)
+
+    col = db.client.get_collection(f"{collection_name}")
+    metadata = col.metadata
+    print(metadata)
 
 @pytest.fixture
 def vstore(request, tmp_path):

@@ -21,7 +21,9 @@ from linkml_runtime.utils.yamlutils import YAMLRoot
 from llm import UnknownModelError, get_model, get_plugins
 from llm.cli import load_conversation
 from oaklib import get_adapter
+from pandas.core.window.doc import kwargs_scipy
 from pydantic import BaseModel
+from venomx.model.venomx import Model, Dataset, Embedding, ModelInputMethod, Index, NamedObject
 
 from curate_gpt import ChromaDBAdapter, __version__
 from curate_gpt.agents.bootstrap_agent import BootstrapAgent, KnowledgeBaseSpecification
@@ -39,6 +41,7 @@ from curate_gpt.evaluation.splitter import stratify_collection
 from curate_gpt.extract import AnnotatedObject
 from curate_gpt.extract.basic_extractor import BasicExtractor
 from curate_gpt.store import get_store
+from curate_gpt.store.metadata import Metadata
 from curate_gpt.store.schema_proxy import SchemaProxy
 from curate_gpt.utils.vectordb_operations import match_collections
 from curate_gpt.wrappers import BaseWrapper, get_wrapper
@@ -2318,7 +2321,29 @@ def index_ontology_command(
     if not append:
         db.remove_collection(collection, exists_ok=True)
     click.echo(f"Indexing {len(list(view.objects()))} objects")
-    db.insert(view.objects(), collection=collection, model=model)
+
+    venomx = Metadata(
+        venomx=Index(
+            id=collection,
+            dataset=Dataset(
+                name=ont
+            ),
+            model=Model(
+                name=model
+            ),
+            model_input_method=ModelInputMethod(
+                fields=db.text_lookup
+            )
+        )
+    )
+
+    db.insert(
+        view.objects(),
+        collection=collection,
+        model=model,
+        venomx=venomx
+    )
+
     db.update_collection_metadata(collection, object_type="OntologyClass")
     e = time.time()
     click.echo(f"Indexed {len(list(view.objects()))} in {e - s} seconds")
