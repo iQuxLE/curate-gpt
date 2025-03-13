@@ -13,6 +13,7 @@ import yaml
 from chromadb import ClientAPI as API
 from chromadb import Settings
 from chromadb.api import EmbeddingFunction
+from chromadb.errors import InvalidCollectionException
 from chromadb.utils import embedding_functions
 from linkml_runtime.dumpers import json_dumper
 from linkml_runtime.utils.yamlutils import YAMLRoot
@@ -444,11 +445,9 @@ class ChromaDBAdapter(DBAdapter):
         collection_name = self._get_collection(collection_name)
         try:
             collection_obj = self.client.get_collection(name=collection_name)
-        except ValueError as e:
-            logger.warning(f"Did not find an existing collection named {collection_name}: {e}\nAssuming this is a new collection.")
-            collection_obj = self.client.get_or_create_collection(collection_name)
-            logger.info(f"Created a new Collection: {collection_name}")
-            # return None
+        except (ValueError, InvalidCollectionException) as e:
+            logger.warning(f"No existing collection named {collection_name}: {e}")
+            return None  # Indicate no metadata because it's a new collection.
         metadata_data = {**collection_obj.metadata, **kwargs}
         try:
             cm = Metadata.deserialize_venomx_metadata_from_adapter(metadata_data, self.name)
