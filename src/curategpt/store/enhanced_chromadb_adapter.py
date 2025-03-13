@@ -176,8 +176,12 @@ class EnhancedChromaDBAdapter(ChromaDBAdapter):
         """
         Get the embedding function for a given model, enhancing it with HP term descriptions.
 
-        :param model: The embedding model to use
-        :return: An embedding function
+        :param model: The embedding model to use. Supports multiple formats:
+                      - OpenAI models: "openai:model-name" or shorthands like "ada", "small3", "large3"
+                      - Ollama models: "ollama:model-name"
+                      - Hugging Face models: Shorthands like "bge-m3", "nomic", "mxbai-l"
+                      - SentenceTransformer models: Direct model names like "all-MiniLM-L6-v2"
+        :return: An enhanced embedding function for HP terms
         """
         # Get the base embedding function from the parent class
         base_ef = super()._embedding_function(model)

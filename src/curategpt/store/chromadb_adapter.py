@@ -150,18 +150,100 @@ class ChromaDBAdapter(DBAdapter):
         """
         self.client.reset()
 
+    # Mapping for shorthand model names to full model names
+    MODEL_MAPPING = {
+        # OpenAI models
+        "ada": "text-embedding-ada-002",
+        "ada002": "text-embedding-ada-002",
+        "small3": "text-embedding-3-small",
+        "large3": "text-embedding-3-large",
+        
+        # Hugging Face / SentenceTransformer models
+        "bge-small": "BAAI/bge-small-en-v1.5",
+        "bge-base": "BAAI/bge-base-en-v1.5",
+        "bge-large": "BAAI/bge-large-en-v1.5",
+        "bge-m3": "BAAI/bge-m3",
+        "all-MiniLM-L6-v2": "all-MiniLM-L6-v2",
+        "all-mpnet-base-v2": "all-mpnet-base-v2",
+        
+        # Nomic models
+        "nomic": "nomic-embed-text-v1.5",
+        "nomic-embed-text": "nomic-embed-text-v1.5",
+        
+        # MXBAI models
+        "mxbai-l": "mxbai/embed-large-v1",
+        "mxbai-large": "mxbai/embed-large-v1"
+    }
+    
     def _embedding_function(self, model: str = None) -> EmbeddingFunction:
         """
         Get the embedding function for a given model.
 
-        :param model:
-        :return:
+        :param model: The model to use for embeddings. 
+                      - For OpenAI models: "openai:model-name" or "openai:" for default
+                      - For Ollama models: "ollama:model-name"
+                      - For shorthand names: "ada", "small3", "large3", "bge-m3", "nomic", "mxbai-l", etc.
+                      - For SentenceTransformer models: direct model name
+        :return: An embedding function suitable for the specified model
         """
+        if not model:
+            model = self.default_model
+            
+        # Handle OpenAI models
         if model.startswith("openai:"):
+            # Extract model name if provided after "openai:" prefix
+            parts = model.split(":")
+            if len(parts) > 1 and parts[1].strip():
+                openai_model = parts[1].strip()
+                # Map shorthand if needed
+                if openai_model in self.MODEL_MAPPING:
+                    openai_model = self.MODEL_MAPPING[openai_model]
+            else:
+                # Default to ada-002 if no specific model provided
+                openai_model = "text-embedding-ada-002"
+                
             return embedding_functions.OpenAIEmbeddingFunction(
                 api_key=os.environ.get("OPENAI_API_KEY"),
-                model_name="text-embedding-ada-002",
+                model_name=openai_model,
             )
+        
+        # Handle Ollama models
+        elif model.startswith("ollama:"):
+            try:
+                from chromadb.utils.embedding_functions import OllamaEmbeddingFunction
+                # Extract model name after ollama: prefix
+                parts = model.split(":")
+                if len(parts) > 1 and parts[1].strip():
+                    ollama_model = parts[1].strip()
+                else:
+                    ollama_model = "llama2"  # Default Ollama model
+                
+                # Get host from environment or use default
+                ollama_host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+                
+                return OllamaEmbeddingFunction(
+                    model_name=ollama_model,
+                    url=ollama_host
+                )
+            except (ImportError, ModuleNotFoundError):
+                logger.error("Ollama embedding function not available. Make sure chromadb is up to date.")
+                raise ValueError("Ollama embedding function not available")
+        
+        # Handle shorthand model names
+        elif model in self.MODEL_MAPPING:
+            mapped_model = self.MODEL_MAPPING[model]
+            # If it's an OpenAI model in the mapping
+            if mapped_model.startswith("text-embedding-"):
+                return embedding_functions.OpenAIEmbeddingFunction(
+                    api_key=os.environ.get("OPENAI_API_KEY"),
+                    model_name=mapped_model,
+                )
+            # Otherwise use SentenceTransformer
+            return embedding_functions.SentenceTransformerEmbeddingFunction(
+                model_name=mapped_model
+            )
+            
+        # Default to SentenceTransformer
         return embedding_functions.SentenceTransformerEmbeddingFunction(model_name=model)
 
     def insert(
