@@ -170,7 +170,7 @@ class EnhancedChromaDBAdapter(ChromaDBAdapter):
     """
     Enhanced ChromaDB adapter that uses custom description generation for HP ontology terms.
     """
-    name: ClassVar[str] = "chromadb"
+    name: ClassVar[str] = "enhanced_chromadb"
     
     def _embedding_function(self, model: str = None) -> EmbeddingFunction:
         """

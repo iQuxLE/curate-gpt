@@ -64,7 +64,7 @@ class Metadata(BaseModel):
         :param adapter: Adapter name (e.g., 'chroma', 'duckdb').
         :return: Metadata dictionary.
         """
-        if adapter == "chromadb":
+        if adapter == "chromadb" or adapter == "enhanced_chromadb":
             # Serialize 'venomx' (dict) into '_venomx' (str)
             metadata_dict = self.model_dump(
                 exclude={"venomx"}, exclude_unset=True, exclude_none=True
