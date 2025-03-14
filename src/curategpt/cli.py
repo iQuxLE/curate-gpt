@@ -2384,7 +2384,7 @@ def index_ontology_command(
     click.echo(f"Indexed {len(list(view.objects()))} in {e - s} seconds")
 
 
-@cli.command(name="index-restricted-ontology")
+@ontology.command(name="index-restricted-ontology")
 @click.option(
     "--db-path",
     "-p",
