@@ -134,6 +134,10 @@ Provide the enhanced description only, without any additional formatting or meta
         enhanced_description = self._generate_enhanced_description(
             term_id, label, definition, relationships, aliases
         )
+
+        print(label)
+        print(term_id)
+        print(enhanced_description)
         
         parts = [
             label,
