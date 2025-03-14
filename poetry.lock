@@ -9342,6 +9342,17 @@ files = [
 ]
 
 [[package]]
+name = "wget"
+version = "3.2"
+description = "pure python download utility"
+optional = false
+python-versions = "*"
+groups = ["main"]
+files = [
+    {file = "wget-3.2.zip", hash = "sha256:35e630eca2aa50ce998b9b1a127bb26b30dfee573702782aa982f875e3f16061"},
+]
+
+[[package]]
 name = "widgetsnbextension"
 version = "4.0.13"
 description = "Jupyter interactive widgets for Jupyter Notebook"
@@ -9541,4 +9552,4 @@ gpt4all = ["gpt4all", "llm-gpt4all"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.9, !=3.9.7"
-content-hash = "2d5a9423918bc87489a065b11d04a7cb22d03d2745c84c50796c9ddc2ac24a5e"
+content-hash = "74660c8acc8d19ec2c97a82aece95b787012c006c7d34f32079ffa48a42f9bbc"

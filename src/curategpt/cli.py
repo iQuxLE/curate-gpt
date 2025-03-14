@@ -40,6 +40,7 @@ from curategpt.extract import AnnotatedObject
 from curategpt.extract.basic_extractor import BasicExtractor
 from curategpt.store import Metadata, get_store
 from curategpt.store.schema_proxy import SchemaProxy
+from curategpt.utils.hpo_clustering import HPOClustering
 from curategpt.utils.vectordb_operations import match_collections
 from curategpt.wrappers import BaseWrapper, get_wrapper
 from curategpt.wrappers.literature.pubmed_wrapper import PubmedWrapper
@@ -2312,9 +2313,10 @@ def ontology():
     "--index-fields",
     help="Fields to index; comma separated",
 )
+@click.option("--restrict_hpo", is_flag=True, help="If set, only index HP:0000118 descendants.")
 @click.argument("ont")
 def index_ontology_command(
-    ont, path, collection, append, model, index_fields, branches, database_type, batch_size
+    ont, path, collection, append, model, index_fields, branches, database_type, batch_size, restrict_hpo
 ):
     """
     Index an ontology.
@@ -2344,13 +2346,28 @@ def index_ontology_command(
         db.text_lookup = _text_lookup
     if not append:
         db.remove_collection(collection, exists_ok=True)
-    click.echo(f"Indexing {len(list(view.objects()))} objects")
+
+    # Step 3: Load ALL objects
+    all_objects_iter = view.objects()  # returns an iterator, NOT a list
+
+    # Step 4: If user wants to restrict to HP:0000118 children
+
 
     venomx = Index(
         id=collection,
         dataset=Dataset(name=ont),
         embedding_model=Model(name=model if model else None),
     )
+    if restrict_hpo:
+        db.insert(
+            view.filtered(),
+            collection=collection,
+            model=model,
+            venomx=venomx,
+            batch_size=batch_size,
+            object_type="OntologyClass"
+
+        )
 
     db.insert(
         view.objects(),

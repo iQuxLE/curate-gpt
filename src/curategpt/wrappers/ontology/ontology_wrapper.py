@@ -16,6 +16,7 @@ from oaklib.utilities.iterator_utils import chunk
 
 from curategpt import DBAdapter
 from curategpt.formatters.format_utils import camelify
+from curategpt.utils.hpo_clustering import HPOClustering
 from curategpt.wrappers.base_wrapper import BaseWrapper
 from curategpt.wrappers.ontology.ontology import OntologyClass, Relationship
 
@@ -64,6 +65,110 @@ class OntologyWrapper(BaseWrapper):
         for object_ids in chunk_iter:
             print("object_ids", object_ids)
             return list(self.objects(object_ids=object_ids))
+
+    def filtered(self, collection: str = None, object_ids: Optional[Iterable[str]] = None, **kwargs) -> Iterator[Dict]:
+        """
+        Yield only objects that are within the allowed HPO subset.
+        The allowed set is determined by HPOClustering.all_children.
+        """
+        adapter = self.oak_adapter
+
+        # Get the allowed HP IDs from HPOClustering.
+        hpo_cluster = HPOClustering()
+        allowed_ids = set(hpo_cluster.all_children)
+
+        # Instead of processing all entities, filter them first.
+        all_entities = list(adapter.entities())
+        # Keep only those entities that are in the allowed_ids.
+        entities = [e for e in all_entities if e in allowed_ids]
+        logger.info(f"Filtered entities: {len(entities)} out of {len(all_entities)}")
+
+        # Process branches, if any, or default to our filtered entities.
+        if self.branches:
+            if not isinstance(adapter, OboGraphInterface):
+                raise ValueError(f"OAK adapter {adapter} does not support branches")
+            selected_ids = []
+            for branch in self.branches:
+                selected_ids.extend(list(adapter.descendants([branch], predicates=[IS_A])))
+            selected_ids = list(set(selected_ids))
+        elif object_ids:
+            selected_ids = list(object_ids)
+        else:
+            selected_ids = list(entities)
+        logger.info(f"Found {len(selected_ids)} selected ids (filtered)")
+
+        # Fetch labels only for all_entities (or you could filter further if needed)
+        labels = {e: lbl for e, lbl in adapter.labels(entities, allow_none=False) if e in allowed_ids}
+        logger.info(f"Found {len(labels)} labels (filtered)")
+
+        definitions = {}
+        if self.fetch_definitions:
+            for chunked_entities in chunk(selected_ids, 100):
+                for id_, defn, _ in adapter.definitions(chunked_entities):
+                    definitions[id_] = defn
+
+        relationships = defaultdict(list)
+        if self.fetch_relationships:
+            for sub, pred, obj in adapter.relationships():
+                if sub in entities:  # you might want to filter here as well
+                    relationships[sub].append((pred, obj))
+
+        self.id_to_shorthand = {}
+        self.shorthand_to_id = {}
+        for id_, lbl in labels.items():
+            shorthand = camelify(lbl)
+            if shorthand in self.shorthand_to_id:
+                shorthand = f"{shorthand}_{id_}"
+            if shorthand in self.shorthand_to_id:
+                continue
+            self.id_to_shorthand[id_] = shorthand
+            self.shorthand_to_id[shorthand] = id_
+
+        self._objects_by_curie = {}
+        self._objects_by_shorthand = {}
+        for id_, shorthand in self.id_to_shorthand.items():
+            if id_ not in selected_ids:
+                continue
+            obj = OntologyClass(
+                id=shorthand,
+                label=labels[id_],
+                original_id=id_,
+            )
+            for pred, tgt in relationships.get(id_, []):
+                k = self._as_shorthand(pred).replace("rdfs:", "")
+                if self.relationships_as_fields:
+                    if not hasattr(obj, k):
+                        setattr(obj, k, [])
+                    getattr(obj, k).append(self._as_shorthand(tgt))
+                else:
+                    if not obj.relationships:
+                        obj.relationships = []
+                    obj.relationships.append(
+                        Relationship(predicate=k, target=self._as_shorthand(tgt))
+                    )
+            if id_ in definitions:
+                obj.definition = definitions[id_]
+            self._objects_by_curie[id_] = obj
+
+        if isinstance(adapter, OboGraphInterface):
+            for ldef in adapter.logical_definitions():
+                shorthand = self._as_shorthand(ldef.definedClassId)
+                obj = self._objects_by_curie.get(ldef.definedClassId, None)
+                if obj is None:
+                    continue
+                obj.logical_definition = [
+                                             Relationship(predicate=IS_A, target=self._as_shorthand(g))
+                                             for g in ldef.genusIds
+                                         ] + [
+                                             Relationship(
+                                                 predicate=self._as_shorthand(r.propertyId),
+                                                 target=self._as_shorthand(r.fillerId),
+                                             )
+                                             for r in ldef.restrictions
+                                         ]
+
+        for obj in self._objects_by_curie.values():
+            yield obj.dict()
 
     def objects(
         self, collection: str = None, object_ids: Optional[Iterable[str]] = None, **kwargs

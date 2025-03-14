@@ -35,7 +35,7 @@ class HPTermEnhancedEmbeddingFunction(EmbeddingFunction):
         self.client = openai.OpenAI()
         self.enhanced_descriptions_cache = {}
 
-    def _generate_enhanced_description(self, term_id: str, label: str, definition: str, 
+    def _generate_enhanced_description(self, term_id: str, label: str, definition: str,
                                       relationships: List[Dict] = None, aliases: List[str] = None) -> str:
         """
         Generate an enhanced description for an HP term using the OpenAI o1 model.
@@ -81,13 +81,12 @@ Provide the enhanced description only, without any additional formatting or meta
             response = self.client.chat.completions.create(
                 model="o1",
                 messages=[{"role": "system", "content": prompt}],
-                max_tokens=8000,
+                max_completion_tokens=8000,
                 temperature=0.2
             )
             
             enhanced_description = response.choices[0].message.content.strip()
             
-            # Cache the result
             self.enhanced_descriptions_cache[cache_key] = enhanced_description
             
             return enhanced_description
@@ -103,7 +102,6 @@ Provide the enhanced description only, without any additional formatting or meta
         :param obj: The object containing term information
         :return: Text prepared for embedding
         """
-        # Check if this is an HP term
         is_hp_term = False
         term_id = obj.get("original_id", "")
         
@@ -111,12 +109,10 @@ Provide the enhanced description only, without any additional formatting or meta
             is_hp_term = True
         
         if not is_hp_term:
-            # For non-HP terms, just return the regular fields
             parts = []
             for field in ["label", "definition", "relationships"]:
                 if field in obj and obj[field]:
                     if field == "relationships" and isinstance(obj[field], list):
-                        # Flatten relationships
                         rel_texts = []
                         for rel in obj[field]:
                             if isinstance(rel, dict):
@@ -130,7 +126,6 @@ Provide the enhanced description only, without any additional formatting or meta
                 
             return " ".join(parts)
         
-        # For HP terms, generate enhanced description
         label = obj.get("label", "")
         definition = obj.get("definition", "")
         relationships = obj.get("relationships", [])
@@ -140,7 +135,6 @@ Provide the enhanced description only, without any additional formatting or meta
             term_id, label, definition, relationships, aliases
         )
         
-        # Combine the original fields with the enhanced description for embedding
         parts = [
             f"Term: {label}",
             f"ID: {term_id}",
@@ -197,9 +191,8 @@ class EnhancedChromaDBAdapter(ChromaDBAdapter):
         :param text_field: The field or function to use for extraction
         :return: Text for embedding
         """
-        # For HP terms, use our enhanced embedding function's document processing
         if isinstance(obj, dict) and obj.get("original_id", "").startswith("HP:"):
-            ef = self._embedding_function(self.default_model)
+            ef = self._embedding_function("large3")
             if isinstance(ef, HPTermEnhancedEmbeddingFunction):
                 return ef._get_document_for_embedding(obj)
         
