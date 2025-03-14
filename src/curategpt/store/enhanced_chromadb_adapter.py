@@ -136,14 +136,14 @@ Provide the enhanced description only, without any additional formatting or meta
         )
         
         parts = [
-            f"Term: {label}",
-            f"ID: {term_id}",
-            f"Description: {enhanced_description}"
+            label,
+            term_id,
+            enhanced_description
         ]
         
         if aliases:
             parts.append("Aliases: " + ", ".join(aliases))
-            
+
         return " ".join(parts)
 
     def __call__(self, texts: List[str]) -> List[List[float]]:
@@ -191,6 +191,7 @@ class EnhancedChromaDBAdapter(ChromaDBAdapter):
         :param text_field: The field or function to use for extraction
         :return: Text for embedding
         """
+        print("Fetching definition")
         if isinstance(obj, dict) and obj.get("original_id", "").startswith("HP:"):
             ef = self._embedding_function("large3")
             if isinstance(ef, HPTermEnhancedEmbeddingFunction):

@@ -2358,6 +2358,7 @@ def index_ontology_command(
         dataset=Dataset(name=ont),
         embedding_model=Model(name=model if model else None),
     )
+
     if restrict_hpo:
         db.insert(
             view.filtered(),
