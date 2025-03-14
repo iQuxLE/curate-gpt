@@ -2384,6 +2384,226 @@ def index_ontology_command(
     click.echo(f"Indexed {len(list(view.objects()))} in {e - s} seconds")
 
 
+@cli.command(name="index-ontology")
+@click.option(
+    "--db-path",
+    "-p",
+    type=click.Path(file_okay=False, path_type=Path),
+    help="Path to store the ChromaDB database (defaults to config value)"
+)
+@click.option(
+    "--collection",
+    "-c",
+    default="hp_standard",
+    show_default=True,
+    help="Collection name for the indexed ontology"
+)
+@click.option(
+    "--ontology",
+    "-o",
+    default="sqlite:obo:hp",
+    show_default=True,
+    help="OAK-style source locator for the ontology"
+)
+@click.option(
+    "--index-fields",
+    default="label,definition,relationships",
+    show_default=True,
+    help="Comma-separated list of fields to index"
+)
+@click.option(
+    "--model",
+    "-m",
+    default="large3",
+    show_default=True,
+    help="Embedding model to use (supports shorthand names like ada, small3, large3)"
+)
+@click.option(
+    "--batch-size",
+    type=int,
+    default=50,
+    show_default=True,
+    help="Number of terms to process in each batch"
+)
+@click.option(
+    "--enhanced-descriptions",
+    is_flag=True,
+    help="Enable enhanced descriptions using OpenAI's o1 model"
+)
+@click.option(
+    "--database-type",
+    "-D",
+    default="enhanced_chromadb",
+    show_default=True,
+    help="Adapter to use for database, e.g. chromadb.",
+)
+@click.option(
+    "--restrict",
+    is_flag=True,
+)
+def index_ontology(
+        db_path: Optional[Path],
+        collection: str,
+        ontology: str,
+        index_fields: str,
+        model: str,
+        batch_size: int,
+        enhanced_descriptions: bool,
+        database_type: str,
+        restrict: bool
+):
+    """
+    Index an ontology for use with ELDER using CurateGPT.
+
+    This command indexes an ontology using standard descriptions by default.
+    With the --enhanced-descriptions flag, it uses OpenAI's o1 model to generate
+    rich, detailed descriptions for each term.
+
+    The Human Phenotype Ontology (HP) works best with ELDER's existing analysis tools,
+    but other ontologies can also be indexed.
+
+    Examples:
+        # Index HP ontology with standard descriptions
+        curate-index index-ontology --db-path ./my_db --collection hp_standard
+
+        # Index with enhanced descriptions for richer semantic understanding
+        curate-index index-ontology --enhanced-descriptions --collection hp_enhanced
+
+        # Use different model shorthand
+        curate-index index-ontology --model ada002
+        curate-index index-ontology --model large3
+
+        # Index with custom fields
+        curate-index index-ontology --index-fields "label,definition"
+    """
+    import pdb
+    import time
+    if enhanced_descriptions and not os.environ.get("OPENAI_API_KEY"):
+        click.echo("ERROR: OPENAI_API_KEY environment variable is required for enhanced descriptions.")
+        click.echo("Set this environment variable before running this command:")
+        click.echo("  export OPENAI_API_KEY=your-key-here")
+        sys.exit(1)
+
+    fields_list = [field.strip() for field in index_fields.split(',') if field.strip()]
+    include_aliases = "aliases" in fields_list
+
+    if not db_path:
+        config = config_loader.load_config()
+        db_path = config.get("chroma_db_path")
+        if not db_path:
+            click.echo("Error: No database path provided and none found in config")
+            sys.exit(1)
+
+    if not db_path.exists():
+        click.echo(f"Creating directory {db_path}")
+        db_path.mkdir(parents=True, exist_ok=True)
+
+    click.echo(f"Initializing {'enhanced' if enhanced_descriptions else 'standard'} ChromaDB adapter")
+    click.echo(f"Database path: {db_path}")
+    click.echo(f"Collection: {collection}")
+    click.echo(f"Ontology: {ontology}")
+    click.echo(f"Index fields: {', '.join(fields_list)}")
+    click.echo(f"Model: {model}")
+    click.echo(f"Batch size: {batch_size}")
+    click.echo(f"Database type: {database_type}")
+
+    try:
+        if enhanced_descriptions:
+            adapter = get_store(name=database_type, path=str(db_path))
+            click.echo("Using EnhancedChromaDBAdapter with o1 model for rich term descriptions")
+        else:
+            adapter = get_store(name=database_type,path=str(db_path))
+            click.echo("Using standard ChromaDBAdapter")
+
+        oak_adapter = get_adapter(ontology)
+        view = OntologyWrapper(oak_adapter=oak_adapter)
+
+        # # Step 3: Load ALL objects
+        # all_objects_iter = view.objects()  # might be large, but okay for smaller ontologies
+        #
+        # # Step 4: If user wants to restrict to HP:0000118 children,
+        # # build the set from HPOClustering
+        # if restrict:
+        #     hpo_cluster = HPOClustering()
+        #     # all_children → list of descendant HP IDs from HP:0000118
+        #     allowed_ids = set(hpo_cluster.all_children)
+        #     filtered_iter = (obj for obj in all_objects_iter
+        #                  if obj.get("original_id", "").startswith("HP:")
+        #                  and obj["original_id"] in allowed_ids)
+        # else:
+        #     filtered_iter = all_objects_iter
+
+
+        def text_lookup(obj):
+            """Custom text extraction function that combines specified fields."""
+            parts = []
+            for field in fields_list:
+                if field != "aliases" and field in obj and obj[field]:
+                    if field == "relationships" and isinstance(obj[field], list):
+                        # Flatten relationships
+                        rel_texts = []
+                        for rel in obj[field]:
+                            if isinstance(rel, dict):
+                                rel_texts.append(f"{rel.get('predicate', '')}: {rel.get('target', '')}")
+                        parts.append(" ".join(rel_texts))
+                    else:
+                        parts.append(str(obj[field]))
+
+            if include_aliases and "aliases" in obj and obj["aliases"]:
+                parts.append("Aliases: " + ", ".join(obj["aliases"]))
+
+            return " ".join(parts)
+
+        adapter.text_lookup = text_lookup
+
+        click.echo(f"Loading terms from {ontology}...")
+
+        venomx_obj = Index(
+            id=collection,
+            embedding_model=Model(name=model if model else None)
+        )
+
+        if collection in adapter.list_collection_names():
+            click.echo(f"Removing existing collection: {collection}")
+            adapter.remove_collection(collection)
+
+        click.echo(f"Indexing terms (this may take a while)...")
+        if restrict:
+            start = time.time()
+            click.echo(f"IRESTRICTe)...")
+
+            adapter.insert(
+                view.filtered(),
+                collection=collection,
+                model=model,
+                venomx=venomx_obj,
+                batch_size=batch_size,
+                object_type="OntologyClass"
+
+            )
+            end = time.time()
+            click.echo(f"Indexed {collection} in {end - start} seconds")
+
+        adapter.insert(
+            view.objects(),
+            collection=collection,
+            model=model,
+            venomx=venomx_obj,
+            batch_size=batch_size,
+            object_type="OntologyClass"
+
+        )
+
+        click.echo(f"✅ Successfully indexed {len(list(view.objects()))} terms in collection '{collection}'")
+        click.echo(f"You can now use this collection with ELDER's analysis commands.")
+
+    except Exception as e:
+        click.echo(f"❌ Error indexing ontology: {str(e)}")
+        import traceback
+        click.echo(traceback.format_exc())
+        sys.exit(1)
+
+
 @main.group()
 def embeddings():
     """Command group for handling embeddings."""
