@@ -86,6 +86,8 @@ Provide the enhanced description only, without any additional formatting or meta
             )
             
             enhanced_description = response.choices[0].message.content.strip()
+            print("LOGGING API")
+            print(enhanced_description)
             
             self.enhanced_descriptions_cache[cache_key] = enhanced_description
             
