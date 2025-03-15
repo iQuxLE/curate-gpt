@@ -79,7 +79,6 @@ Your description should:
 The description should not exceed 8000 tokens.
 Provide the enhanced description only, without any additional formatting or meta-information.
 """
-        # print(prompt)
 
         response = self.client.chat.completions.create(
             model="o1",
@@ -137,10 +136,6 @@ Provide the enhanced description only, without any additional formatting or meta
         )
         if enhanced_description is None:
             enhanced_description = ""
-
-        print(label)
-        print(term_id)
-        print(enhanced_description)
         
         parts = [
             label,
@@ -162,7 +157,6 @@ Provide the enhanced description only, without any additional formatting or meta
         :param texts: List of texts or JSON strings
         :return: List of embedding vectors
         """
-        # Process the texts through the base embedding function
         return self.base_embedding_function(texts)
 
 
@@ -184,10 +178,8 @@ class EnhancedChromaDBAdapter(ChromaDBAdapter):
                       - SentenceTransformer models: Direct model names like "all-MiniLM-L6-v2"
         :return: An enhanced embedding function for HP terms
         """
-        # Get the base embedding function from the parent class
         base_ef = super()._embedding_function(model)
         
-        # Wrap it with our enhanced embedding function
         return HPTermEnhancedEmbeddingFunction(base_ef)
     
     def _text(self, obj: OBJECT, text_field: Union[str, Callable]) -> str:
@@ -233,7 +225,6 @@ class BatchEnhancementProcessor:
         self.client = OpenAI()
         self.enhanced_cache = {}
 
-        # Ensure API key is set
         if not os.environ.get("OPENAI_API_KEY"):
             raise ValueError("OPENAI_API_KEY environment variable must be set")
 
@@ -254,7 +245,6 @@ class BatchEnhancementProcessor:
             for i, obj in enumerate(objects):
                 term_id = obj.get("original_id", "")
 
-                # Skip if not an HP term
                 if not term_id.startswith("HP:"):
                     continue
 
@@ -263,12 +253,10 @@ class BatchEnhancementProcessor:
                 relationships = obj.get("relationships", [])
                 aliases = obj.get("aliases", []) if "aliases" in obj else []
 
-                # Create prompt for enhanced description
                 prompt = self._create_enhancement_prompt(term_id, label, definition, relationships, aliases)
 
-                # Create a request entry for the batch API
                 request = {
-                    "custom_id": term_id,  # Use the term ID as the custom ID
+                    "custom_id": term_id,
                     "method": "POST",
                     "url": "/v1/chat/completions",
                     "body": {
