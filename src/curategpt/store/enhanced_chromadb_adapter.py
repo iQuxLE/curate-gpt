@@ -264,7 +264,7 @@ class BatchEnhancementProcessor:
                         "messages": [
                             {"role": "system", "content": prompt}
                         ],
-                        "max_tokens": 8000
+                        "max_completion_tokens": 8000
                     }
                 }
 
