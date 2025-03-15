@@ -443,6 +443,11 @@ Provide the enhanced description only, without any additional formatting or meta
             results_response = self.client.files.content(output_file_id)
             results_content = results_response.text
 
+            # Write the complete batch response to a file
+            batch_output_file = output_dir / f"batch_{batch_num}_output.jsonl"
+            with open(batch_output_file, "w") as f:
+                f.write(results_content)
+
             results = [json.loads(line) for line in results_content.strip().split('\n')]
 
             for result in results:
@@ -456,3 +461,10 @@ Provide the enhanced description only, without any additional formatting or meta
                         if content:
                             self.enhanced_cache[term_id] = content
                             logger.info(f"Cached enhanced description for {term_id}")
+
+                            # Write to output /enhanced_descriptions.jsonl
+                            result_file = output_dir / f"enhanced_descriptions.jsonl"
+                            with open(result_file, "a") as f:
+                                json_record = json.dumps({"term_id": term_id, "enhanced_description": content})
+                                f.write(json_record + "\n")
+                                logger.info(f"Written enhanced description for {term_id} to JSONL file")
