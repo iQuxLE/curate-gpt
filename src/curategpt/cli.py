@@ -2798,6 +2798,248 @@ def index_with_batch(
         click.echo(traceback.format_exc())
         sys.exit(1)
 
+
+@ontology.command(name="restore_enhanced_descriptions")
+@click.option(
+    "--db-path",
+    type=click.Path(),
+    help="Path to the database directory"
+)
+@click.option(
+    "--collection",
+    required=True,
+    help="Name of the collection to create or update"
+)
+@click.option(
+    "--jsonl-file",
+    type=click.Path(exists=True),
+    help="Path to the JSONL file containing enhanced descriptions"
+)
+@click.option(
+    "--batch-dir",
+    type=click.Path(exists=True),
+    help="Directory containing batch results to recover from"
+)
+@click.option(
+    "--model",
+    default="large3",
+    help="Embedding model to use"
+)
+@click.option(
+    "--batch-size",
+    default=100,
+    type=int,
+    help="Batch size for processing"
+)
+@click.option(
+    "--database-type",
+    default="chromadb",
+    help="Type of database to use"
+)
+@click.option(
+    "--index-fields",
+    default="label,definition,relationships",
+    help="Comma-separated list of fields to index"
+)
+@click.option(
+    "--ontology",
+    default="hp",
+    help="Name of the ontology to use for term info"
+)
+@click.option(
+    "--recreate-collection",
+    is_flag=True,
+    help="Recreate the collection if it exists"
+)
+def restore_enhanced_descriptions(
+        db_path: Optional[Path],
+        collection: str,
+        jsonl_file: Optional[str],
+        batch_dir: Optional[str],
+        model: str,
+        batch_size: int,
+        database_type: str,
+        index_fields: str,
+        ontology: str,
+        recreate_collection: bool
+):
+    """
+    Restore and index enhanced descriptions from a saved JSONL file or batch results.
+
+    This command allows you to recover from a failed indexing operation by using
+    previously generated enhanced descriptions. It can restore from:
+
+    1. A JSONL file containing enhanced descriptions (--jsonl-file)
+    2. Batch API results in a batch directory (--batch-dir)
+
+    You must specify at least one of these sources.
+
+    Examples:
+        # Restore from a JSONL file
+        curate-index ontology restore_enhanced_descriptions \\
+          --collection hp_enhanced \\
+          --jsonl-file ./batch_output/enhanced_descriptions.jsonl
+
+        # Restore from batch results directory
+        curate-index ontology restore_enhanced_descriptions \\
+          --collection hp_enhanced \\
+          --batch-dir ./batch_output
+    """
+    import json
+    import glob
+    import time
+
+    if not jsonl_file and not batch_dir:
+        click.echo("ERROR: You must specify either --jsonl-file or --batch-dir")
+        sys.exit(1)
+
+    fields_list = [field.strip() for field in index_fields.split(',') if field.strip()]
+    include_aliases = "aliases" in fields_list
+
+    click.echo(f"Initializing restore operation")
+    click.echo(f"Database path: {db_path}")
+    click.echo(f"Collection: {collection}")
+    click.echo(f"Database type: {database_type}")
+    click.echo(f"Index fields: {', '.join(fields_list)}")
+    click.echo(f"Embedding model: {model}")
+
+    try:
+        adapter = get_store(name=database_type, path=str(db_path))
+        click.echo(f"Using {database_type} adapter")
+
+        oak_adapter = get_adapter(ontology)
+        view = OntologyWrapper(oak_adapter=oak_adapter)
+
+        def text_lookup(obj):
+            """Custom text extraction function that prioritizes enhanced descriptions."""
+            parts = []
+            if "enhanced_description" in obj and obj.get("original_id", "").startswith("HP:"):
+                parts.append(obj["enhanced_description"])
+            for field in fields_list:
+                if field != "aliases" and field in obj and obj[field]:
+                    if field == "relationships" and isinstance(obj[field], list):
+                        rel_texts = []
+                        for rel in obj[field]:
+                            if isinstance(rel, dict):
+                                rel_texts.append(f"{rel.get('predicate', '')}: {rel.get('target', '')}")
+                        parts.append(" ".join(rel_texts))
+                    elif field != "definition" or "enhanced_description" not in obj:
+                        parts.append(str(obj[field]))
+
+            if include_aliases and "aliases" in obj and obj["aliases"]:
+                parts.append("Aliases: " + ", ".join(obj["aliases"]))
+
+            return " ".join(parts)
+
+        adapter.text_lookup = text_lookup
+
+        enhanced_descriptions = {}
+
+        if jsonl_file:
+            click.echo(f"Loading enhanced descriptions from {jsonl_file}")
+            with open(jsonl_file, 'r') as f:
+                for line in f:
+                    try:
+                        record = json.loads(line)
+                        if "id" in record and "enhanced_description" in record:
+                            enhanced_descriptions[record["id"]] = record
+                    except json.JSONDecodeError:
+                        continue
+            click.echo(f"Loaded {len(enhanced_descriptions)} descriptions from JSONL file")
+
+        if batch_dir:
+            click.echo(f"Loading enhanced descriptions from batch results in {batch_dir}")
+            batch_path = Path(batch_dir)
+
+            result_files = glob.glob(str(batch_path / "*.jsonl"))
+            processed_count = 0
+
+            for file_path in result_files:
+                try:
+                    with open(file_path, 'r') as f:
+                        for line in f:
+                            try:
+                                data = json.loads(line)
+                                if "custom_id" in data and "response" in data and data["response"].get(
+                                        "status_code") == 200:
+                                    term_id = data["custom_id"]
+                                    body = data["response"].get("body", {})
+                                    choices = body.get("choices", [])
+
+                                    if choices and term_id.startswith("HP:"):
+                                        content = choices[0].get("message", {}).get("content", "")
+                                        if content and term_id not in enhanced_descriptions:
+                                            enhanced_descriptions[term_id] = {
+                                                "id": term_id,
+                                                "enhanced_description": content
+                                            }
+                                            processed_count += 1
+                            except json.JSONDecodeError:
+                                continue
+                except Exception as e:
+                    click.echo(f"Error processing file {file_path}: {str(e)}")
+
+            click.echo(f"Loaded {processed_count} additional descriptions from batch results")
+
+        if not enhanced_descriptions:
+            click.echo("No enhanced descriptions found in the specified sources")
+            sys.exit(1)
+
+        click.echo(f"Total enhanced descriptions loaded: {len(enhanced_descriptions)}")
+
+        venomx_obj = Index(
+            id=collection,
+            embedding_model=Model(name=model if model else None)
+        )
+
+        if recreate_collection and collection in adapter.list_collection_names():
+            click.echo(f"Removing existing collection: {collection}")
+            adapter.remove_collection(collection)
+
+        if collection not in adapter.list_collection_names():
+            click.echo(f"Creating new collection: {collection}")
+
+        click.echo(f"Loading base ontology objects...")
+
+        def enhanced_objects_generator():
+            """Generate enhanced objects from base ontology."""
+            base_objects_iter = view.filtered_o() if all(
+                term_id.startswith("HP:") for term_id in enhanced_descriptions) else view.objects()
+
+            for obj in base_objects_iter:
+                term_id = obj.get("original_id", "")
+                if term_id in enhanced_descriptions:
+                    obj["enhanced_description"] = enhanced_descriptions[term_id]["enhanced_description"]
+
+                    saved_record = enhanced_descriptions[term_id]
+                    for field in ["label", "definition", "relationships"]:
+                        if field in saved_record and field not in obj:
+                            obj[field] = saved_record[field]
+
+                yield obj
+
+        click.echo(f"Indexing enhanced objects...")
+        start_time = time.time()
+
+        adapter.insert(
+            enhanced_objects_generator(),
+            collection=collection,
+            model=model,
+            venomx=venomx_obj,
+            batch_size=batch_size,
+            object_type="OntologyClass"
+        )
+
+        end_time = time.time()
+        click.echo(
+            f"✅ Successfully restored and indexed collection '{collection}' in {end_time - start_time:.2f} seconds")
+
+    except Exception as e:
+        click.echo(f"❌ Error restoring enhanced descriptions: {str(e)}")
+        import traceback
+        click.echo(traceback.format_exc())
+        sys.exit(1)
+
 @main.group()
 def embeddings():
     """Command group for handling embeddings."""
