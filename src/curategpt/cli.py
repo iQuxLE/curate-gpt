@@ -4,6 +4,7 @@ import csv
 import gzip
 import json
 import logging
+import os
 import sys
 import tempfile
 import time
@@ -39,6 +40,7 @@ from curategpt.evaluation.splitter import stratify_collection
 from curategpt.extract import AnnotatedObject
 from curategpt.extract.basic_extractor import BasicExtractor
 from curategpt.store import Metadata, get_store
+from curategpt.store.enhanced_chromadb_adapter import BatchEnhancementProcessor
 from curategpt.store.schema_proxy import SchemaProxy
 from curategpt.utils.hpo_clustering import HPOClustering
 from curategpt.utils.vectordb_operations import match_collections
@@ -2476,7 +2478,6 @@ def index_restricted_ontology(
         # Index with custom fields
         curate-index index-ontology --index-fields "label,definition"
     """
-    import pdb
     import time
     if enhanced_descriptions and not os.environ.get("OPENAI_API_KEY"):
         click.echo("ERROR: OPENAI_API_KEY environment variable is required for enhanced descriptions.")
@@ -2487,16 +2488,15 @@ def index_restricted_ontology(
     fields_list = [field.strip() for field in index_fields.split(',') if field.strip()]
     include_aliases = "aliases" in fields_list
 
-    if not db_path:
-        config = config_loader.load_config()
-        db_path = config.get("chroma_db_path")
-        if not db_path:
-            click.echo("Error: No database path provided and none found in config")
-            sys.exit(1)
-
-    if not db_path.exists():
-        click.echo(f"Creating directory {db_path}")
-        db_path.mkdir(parents=True, exist_ok=True)
+    # if not db_path:
+    #     db_path = "./db"
+    #     if not db_path:
+    #         click.echo("Error: No database path provided and none found in config")
+    #         sys.exit(1)
+    #
+    # if not db_path.exists():
+    #     click.echo(f"Creating directory {db_path}")
+    #     db_path.mkdir(parents=True, exist_ok=True)
 
     click.echo(f"Initializing {'enhanced' if enhanced_descriptions else 'standard'} ChromaDB adapter")
     click.echo(f"Database path: {db_path}")
@@ -2573,7 +2573,7 @@ def index_restricted_ontology(
             click.echo(f"IRESTRICTe)...")
 
             adapter.insert(
-                view.filtered(),
+                view.filtered_o(),
                 collection=collection,
                 model=model,
                 venomx=venomx_obj,
@@ -2603,6 +2603,200 @@ def index_restricted_ontology(
         click.echo(traceback.format_exc())
         sys.exit(1)
 
+
+@ontology.command(name="index_batch_restricted_ontology")
+@click.option(
+    "--db-path",
+    type=click.Path(),
+    help="Path to the database directory"
+)
+@click.option(
+    "--collection",
+    "-c",
+    required=True,
+    help="Name of the collection to create"
+)
+@click.option(
+    "--ontology",
+    default="sqlite:obo:hp",
+    help="Name of the ontology to index (default: hp)"
+)
+@click.option(
+    "--index-fields",
+    default="label,definition,relationships",
+    help="Comma-separated list of fields to index"
+)
+@click.option(
+    "--model",
+    default="large3",
+    help="Embedding model to use"
+)
+@click.option(
+    "--batch-size",
+    default=100,
+    type=int,
+    help="Batch size for processing"
+)
+@click.option(
+    "--openai-model",
+    default="o1",
+    help="OpenAI model to use for enhancement"
+)
+@click.option(
+    "--batch-dir",
+    type=click.Path(),
+    default="./batch_output",
+    help="Directory for batch files and results"
+)
+@click.option(
+    "--database-type",
+    default="chromadb",
+    help="Type of database to use"
+)
+@click.option(
+    "--restrict",
+    is_flag=True,
+    help="Restrict to HPO terms only"
+)
+@click.option(
+    "--completion-window",
+    default="24h",
+    help="Completion window for batch API"
+)
+def index_with_batch(
+        db_path: Optional[Path],
+        collection: str,
+        ontology: str,
+        index_fields: str,
+        model: str,
+        batch_size: int,
+        openai_model: str,
+        batch_dir: str,
+        database_type: str,
+        restrict: bool,
+        completion_window: str
+):
+    """
+    Index an ontology with enhanced descriptions using OpenAI's Batch API.
+
+    This command indexes an ontology using OpenAI's batch API to generate
+    rich, detailed descriptions for each term before storing them in the database.
+
+    Examples:
+        # Index HP ontology with enhanced descriptions using batch API
+        curate-index index-with-batch --collection hp_enhanced --batch-size 100
+
+        # Use a specific OpenAI model and embedding model
+        curate-index index-with-batch --openai-model o1 --model large3 --collection hp_custom
+    """
+    # Check for OpenAI API key
+    if not os.environ.get("OPENAI_API_KEY"):
+        click.echo("ERROR: OPENAI_API_KEY environment variable is required for batch API.")
+        click.echo("Set this environment variable before running this command:")
+        click.echo("  export OPENAI_API_KEY=your-key-here")
+        sys.exit(1)
+
+    fields_list = [field.strip() for field in index_fields.split(',') if field.strip()]
+    include_aliases = "aliases" in fields_list
+
+    batch_output_dir = Path(batch_dir)
+    batch_output_dir.mkdir(parents=True, exist_ok=True)
+
+    click.echo(f"Initializing batch-enhanced ChromaDB adapter")
+    click.echo(f"Database path: {db_path}")
+    click.echo(f"Collection: {collection}")
+    click.echo(f"Ontology: {ontology}")
+    click.echo(f"Index fields: {', '.join(fields_list)}")
+    click.echo(f"Embedding model: {model}")
+    click.echo(f"OpenAI model for enhancement: {openai_model}")
+    click.echo(f"Batch size: {batch_size}")
+    click.echo(f"Batch directory: {batch_output_dir}")
+    click.echo(f"Database type: {database_type}")
+    click.echo(f"Completion window: {completion_window}")
+
+    try:
+        adapter = get_store(name=database_type, path=str(db_path))
+        click.echo(f"Using {database_type} adapter")
+
+        oak_adapter = get_adapter(ontology)
+        view = OntologyWrapper(oak_adapter=oak_adapter)
+
+        processor = BatchEnhancementProcessor(
+            batch_size=batch_size,
+            model=openai_model,
+            completion_window=completion_window
+        )
+
+        def text_lookup(obj):
+            """Custom text extraction function that combines specified fields and uses enhanced description."""
+            parts = []
+            if "enhanced_description" in obj and obj.get("original_id", "").startswith("HP:"):
+                parts.append(obj["enhanced_description"])
+            for field in fields_list:
+                if field != "aliases" and field in obj and obj[field]:
+                    if field == "relationships" and isinstance(obj[field], list):
+                        rel_texts = []
+                        for rel in obj[field]:
+                            if isinstance(rel, dict):
+                                rel_texts.append(f"{rel.get('predicate', '')}: {rel.get('target', '')}")
+                        parts.append(" ".join(rel_texts))
+                    elif field != "definition" or "enhanced_description" not in obj:
+                        parts.append(str(obj[field]))
+
+            if include_aliases and "aliases" in obj and obj["aliases"]:
+                parts.append("Aliases: " + ", ".join(obj["aliases"]))
+
+            return " ".join(parts)
+
+        adapter.text_lookup = text_lookup
+
+        click.echo(f"Loading terms from {ontology}...")
+
+        venomx_obj = Index(
+            id=collection,
+            embedding_model=Model(name=model if model else None)
+        )
+
+        if collection in adapter.list_collection_names():
+            click.echo(f"Removing existing collection: {collection}")
+            adapter.remove_collection(collection)
+
+        click.echo(f"Processing terms with batch API (this may take a while)...")
+
+        start_time = time.time()
+        if restrict:
+            click.echo(f"Using restricted set (HP terms only)...")
+            enhanced_objects = processor.process_ontology_in_batches(
+                view.filtered_o(),
+                batch_output_dir
+            )
+        else:
+            click.echo(f"Using all ontology terms...")
+            enhanced_objects = processor.process_ontology_in_batches(
+                view.objects(),
+                batch_output_dir
+            )
+
+
+        click.echo(f"Indexing enhanced terms...")
+        adapter.insert(
+            enhanced_objects,
+            collection=collection,
+            model=model,
+            venomx=venomx_obj,
+            batch_size=batch_size,
+            object_type="OntologyClass"
+        )
+
+        end_time = time.time()
+        click.echo(f"✅ Successfully indexed collection '{collection}' in {end_time - start_time:.2f} seconds")
+        click.echo(f"You can now use this collection with ELDER's analysis commands.")
+
+    except Exception as e:
+        click.echo(f"❌ Error indexing ontology: {str(e)}")
+        import traceback
+        click.echo(traceback.format_exc())
+        sys.exit(1)
 
 @main.group()
 def embeddings():

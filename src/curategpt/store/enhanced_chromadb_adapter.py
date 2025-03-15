@@ -1,12 +1,15 @@
 """Enhanced ChromaDB adapter with custom description generation for ontology terms."""
-
+import json
 import logging
 import os
+import time
 from dataclasses import dataclass
-from typing import Callable, ClassVar, Dict, Iterable, List, Mapping, Optional, Union
+from pathlib import Path
+from typing import Callable, ClassVar, Dict, Iterable, List, Mapping, Optional, Union, Iterator
 
 import openai
 from chromadb.api import EmbeddingFunction
+from openai import OpenAI
 
 from curategpt.store.chromadb_adapter import ChromaDBAdapter
 from curategpt.store.vocab import OBJECT
@@ -76,26 +79,22 @@ Your description should:
 The description should not exceed 8000 tokens.
 Provide the enhanced description only, without any additional formatting or meta-information.
 """
+        # print(prompt)
 
-        try:
-            response = self.client.chat.completions.create(
-                model="o1",
-                messages=[{"role": "system", "content": prompt}],
-                max_completion_tokens=8000,
-                temperature=0.2
-            )
-            
-            enhanced_description = response.choices[0].message.content.strip()
-            print("LOGGING API")
-            print(enhanced_description)
-            
-            self.enhanced_descriptions_cache[cache_key] = enhanced_description
-            
-            return enhanced_description
-        except Exception as e:
-            logger.error(f"Error generating enhanced description for {term_id}: {e}")
-            # Fallback to original definition if there's an error
-            return definition
+        response = self.client.chat.completions.create(
+            model="o1",
+            messages=[{"role": "system", "content": prompt}],
+            max_completion_tokens=8000,
+        )
+
+        enhanced_description = response.choices[0].message.content.strip()
+        print("LOGGING API")
+        print(enhanced_description)
+
+        self.enhanced_descriptions_cache[cache_key] = enhanced_description
+
+        return enhanced_description
+
 
     def _get_document_for_embedding(self, obj: Dict) -> str:
         """
@@ -136,6 +135,8 @@ Provide the enhanced description only, without any additional formatting or meta
         enhanced_description = self._generate_enhanced_description(
             term_id, label, definition, relationships, aliases
         )
+        if enhanced_description is None:
+            enhanced_description = ""
 
         print(label)
         print(term_id)
@@ -197,11 +198,273 @@ class EnhancedChromaDBAdapter(ChromaDBAdapter):
         :param text_field: The field or function to use for extraction
         :return: Text for embedding
         """
-        print("Fetching definition")
+
+        print("Inside _text method")
+        print("Object original_id:", obj.get("original_id", ""))
         if isinstance(obj, dict) and obj.get("original_id", "").startswith("HP:"):
+            print("HP term detected, using enhanced description")
             ef = self._embedding_function("large3")
             if isinstance(ef, HPTermEnhancedEmbeddingFunction):
                 return ef._get_document_for_embedding(obj)
-        
-        # For all other objects, fall back to the parent implementation
+        print("Falling back to super() _text")
         return super()._text(obj, text_field)
+
+
+class BatchEnhancementProcessor:
+    """Process ontology terms in batches using OpenAI's Batch API."""
+
+    def __init__(
+            self,
+            batch_size: int = 100,
+            model: str = "o1",
+            completion_window: str = "24h"
+    ):
+        """
+        Initialize the batch processor.
+
+        Args:
+            batch_size: Number of items to process in each batch
+            model: OpenAI model to use for enhancement
+            completion_window: Completion window for batch API
+        """
+        self.batch_size = batch_size
+        self.model = model
+        self.completion_window = completion_window
+        self.client = OpenAI()
+        self.enhanced_cache = {}
+
+        # Ensure API key is set
+        if not os.environ.get("OPENAI_API_KEY"):
+            raise ValueError("OPENAI_API_KEY environment variable must be set")
+
+    def prepare_batch_file(self, objects: List[Dict], output_file: str) -> str:
+        """
+        Prepare a JSONL batch file for OpenAI Batch API.
+
+        Args:
+            objects: List of ontology objects to enhance
+            output_file: Path to write the batch file
+
+        Returns:
+            Path to the created batch file
+        """
+        logger.info(f"Preparing batch file with {len(objects)} objects")
+
+        with open(output_file, 'w') as f:
+            for i, obj in enumerate(objects):
+                term_id = obj.get("original_id", "")
+
+                # Skip if not an HP term
+                if not term_id.startswith("HP:"):
+                    continue
+
+                label = obj.get("label", "")
+                definition = obj.get("definition", "")
+                relationships = obj.get("relationships", [])
+                aliases = obj.get("aliases", []) if "aliases" in obj else []
+
+                # Create prompt for enhanced description
+                prompt = self._create_enhancement_prompt(term_id, label, definition, relationships, aliases)
+
+                # Create a request entry for the batch API
+                request = {
+                    "custom_id": term_id,  # Use the term ID as the custom ID
+                    "method": "POST",
+                    "url": "/v1/chat/completions",
+                    "body": {
+                        "model": self.model,
+                        "messages": [
+                            {"role": "system", "content": prompt}
+                        ],
+                        "max_tokens": 8000
+                    }
+                }
+
+                # Write the request to the batch file
+                f.write(json.dumps(request) + '\n')
+
+        logger.info(f"Batch file created at {output_file}")
+        return output_file
+
+    def _create_enhancement_prompt(
+            self,
+            term_id: str,
+            label: str,
+            definition: str,
+            relationships: List[Dict] = None,
+            aliases: List[str] = None
+    ) -> str:
+        """
+        Create a prompt for enhancing an HP term description.
+
+        Args:
+            term_id: The ID of the term
+            label: The label of the term
+            definition: The original definition
+            relationships: Optional list of relationships
+            aliases: Optional list of aliases
+
+        Returns:
+            Prompt for the OpenAI model
+        """
+        return f"""
+You are an expert in human phenotypes and medical terminology. 
+Create a comprehensive and detailed description of the phenotypic term: "{label}" (ID: {term_id}).
+
+The existing definition is: "{definition}"
+
+{f"The term has these aliases: {', '.join(aliases)}" if aliases else ""}
+
+{f"The term has these relationships: {relationships}" if relationships else ""}
+
+Your description should:
+1. Be more detailed and descriptive than typical ontology definitions
+2. Include clinically relevant details about etiology, prevalence, and associated conditions
+3. Describe anatomical structures and physiological processes involved
+4. Explain how this phenotype may present across different severities and contexts
+5. Make the term comparable both to related terms and as a standalone concept
+6. Include important distinguishing features that differentiate it from similar phenotypes
+7. Be clear to medical professionals while remaining precise
+8. Use your general knowledge about human phenotypes to enrich the description
+
+The description should not exceed 8000 tokens.
+Provide the enhanced description only, without any additional formatting or meta-information.
+"""
+
+    def process_ontology_in_batches(
+            self,
+            ontology_objects: Iterable[Dict],
+            output_dir: Path
+    ) -> Iterator[Dict]:
+        """
+        Process ontology objects in batches, enhancing HP terms.
+
+        Args:
+            ontology_objects: Iterator of ontology objects from filtered_o
+            output_dir: Directory to store batch files and results
+
+        Returns:
+            Iterator of enhanced ontology objects
+        """
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        batch_count = 0
+        batch = []
+
+        hp_term_indices = {}
+        all_objects = []
+
+        logger.info("First pass: collecting objects and identifying HP terms")
+        for i, obj in enumerate(ontology_objects):
+            all_objects.append(obj)
+
+            term_id = obj.get("original_id", "")
+            if term_id.startswith("HP:"):
+                hp_term_indices[i] = term_id
+
+        logger.info(f"Found {len(all_objects)} total objects with {len(hp_term_indices)} HP terms")
+
+        if hp_term_indices:
+            logger.info("Second pass: Processing HP terms in batches")
+            batch_hp_indices = {}
+            hp_terms_batch = []
+
+            for i, term_id in hp_term_indices.items():
+                if term_id in self.enhanced_cache:
+                    logger.info(f"Using cached enhanced description for {term_id}")
+                    continue
+
+                hp_terms_batch.append(all_objects[i])
+                batch_hp_indices[len(hp_terms_batch) - 1] = i
+
+                if len(hp_terms_batch) >= self.batch_size:
+                    self._process_batch(hp_terms_batch, batch_hp_indices, all_objects, output_dir, batch_count)
+                    batch_count += 1
+                    hp_terms_batch = []
+                    batch_hp_indices = {}
+
+            if hp_terms_batch:
+                self._process_batch(hp_terms_batch, batch_hp_indices, all_objects, output_dir, batch_count)
+
+        for obj in all_objects:
+            term_id = obj.get("original_id", "")
+            if term_id.startswith("HP:") and term_id in self.enhanced_cache:
+                enhanced_description = self.enhanced_cache[term_id]
+                obj["enhanced_description"] = enhanced_description
+            yield obj
+
+    def _process_batch(
+            self,
+            hp_terms_batch: List[Dict],
+            batch_indices: Dict[int, int],
+            all_objects: List[Dict],
+            output_dir: Path,
+            batch_num: int
+    ):
+        """
+        Process a batch of HP terms.
+
+        Args:
+            hp_terms_batch: Batch of HP terms to process
+            batch_indices: Mapping from batch index to original index
+            all_objects: List of all ontology objects
+            output_dir: Directory to store batch files and results
+            batch_num: Batch number for file naming
+        """
+        if not hp_terms_batch:
+            return
+
+        batch_file = output_dir / f"batch_{batch_num}.jsonl"
+        logger.info(f"Processing batch {batch_num} with {len(hp_terms_batch)} HP terms")
+
+        self.prepare_batch_file(hp_terms_batch, str(batch_file))
+
+        batch_file_upload = self.client.files.create(
+            file=open(batch_file, "rb"),
+            purpose="batch"
+        )
+
+        print(f"Uploaded batch file with ID: {batch_file_upload.id}")
+
+        batch = self.client.batches.create(
+            input_file_id=batch_file_upload.id,
+            endpoint="/v1/chat/completions",
+            completion_window=self.completion_window
+        )
+
+        print(f"Created batch with ID: {batch.id}")
+
+        completed = False
+        while not completed:
+            batch_status = self.client.batches.retrieve(batch.id)
+            status = batch_status.status
+
+            logger.info(f"Batch {batch.id} status: {status}")
+
+            if status == "completed":
+                completed = True
+            elif status in ["failed", "expired", "cancelled"]:
+                logger.error(f"Batch {batch.id} {status}")
+                return
+            else:
+                logger.info(f"Waiting for batch to complete. Current status: {status}")
+                time.sleep(30)
+
+        output_file_id = batch_status.output_file_id
+        if output_file_id:
+            results_response = self.client.files.content(output_file_id)
+            results_content = results_response.text
+
+            results = [json.loads(line) for line in results_content.strip().split('\n')]
+
+            for result in results:
+                term_id = result.get("custom_id")
+                if term_id and "error" not in result:
+                    response_body = result.get("response", {}).get("body", {})
+                    choices = response_body.get("choices", [])
+
+                    if choices:
+                        content = choices[0].get("message", {}).get("content", "")
+                        if content:
+                            self.enhanced_cache[term_id] = content
+                            logger.info(f"Cached enhanced description for {term_id}")

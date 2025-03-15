@@ -66,7 +66,7 @@ class OntologyWrapper(BaseWrapper):
             print("object_ids", object_ids)
             return list(self.objects(object_ids=object_ids))
 
-    def filtered(self, collection: str = None, object_ids: Optional[Iterable[str]] = None, **kwargs) -> Iterator[Dict]:
+    def filtered_o(self, collection: str = None, object_ids: Optional[Iterable[str]] = None, **kwargs) -> Iterator[Dict]:
         """
         Yield only objects that are within the allowed HPO subset.
         The allowed set is determined by HPOClustering.all_children.
