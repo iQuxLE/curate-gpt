@@ -2663,6 +2663,12 @@ def index_restricted_ontology(
     default="24h",
     help="Completion window for batch API"
 )
+@click.option(
+    "--cache",
+    default="batch_output",
+    help="Cache directory for openai responses in jsonl format"
+
+)
 def index_with_batch(
         db_path: Optional[Path],
         collection: str,
@@ -2674,7 +2680,8 @@ def index_with_batch(
         batch_dir: str,
         database_type: str,
         restrict: bool,
-        completion_window: str
+        completion_window: str,
+        cache: str
 ):
     """
     Index an ontology with enhanced descriptions using OpenAI's Batch API.
@@ -2724,7 +2731,8 @@ def index_with_batch(
         processor = BatchEnhancementProcessor(
             batch_size=batch_size,
             model=openai_model,
-            completion_window=completion_window
+            completion_window=completion_window,
+            cache_dir=Path(cache)
         )
 
         def text_lookup(obj):
@@ -2797,6 +2805,8 @@ def index_with_batch(
         import traceback
         click.echo(traceback.format_exc())
         sys.exit(1)
+
+
 
 
 @ontology.command(name="restore_enhanced_descriptions")

@@ -4854,14 +4854,14 @@ tests = ["coverage", "pytest", "unittest-templates"]
 
 [[package]]
 name = "openai"
-version = "1.63.2"
+version = "1.66.3"
 description = "The official Python library for the openai API"
 optional = false
 python-versions = ">=3.8"
 groups = ["main"]
 files = [
-    {file = "openai-1.63.2-py3-none-any.whl", hash = "sha256:1f38b27b5a40814c2b7d8759ec78110df58c4a614c25f182809ca52b080ff4d4"},
-    {file = "openai-1.63.2.tar.gz", hash = "sha256:aeabeec984a7d2957b4928ceaa339e2ead19c61cfcf35ae62b7c363368d26360"},
+    {file = "openai-1.66.3-py3-none-any.whl", hash = "sha256:a427c920f727711877ab17c11b95f1230b27767ba7a01e5b66102945141ceca9"},
+    {file = "openai-1.66.3.tar.gz", hash = "sha256:8dde3aebe2d081258d4159c4cb27bdc13b5bb3f7ea2201d9bd940b9a89faf0c9"},
 ]
 
 [package.dependencies]
@@ -9552,4 +9552,4 @@ gpt4all = ["gpt4all", "llm-gpt4all"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.9, !=3.9.7"
-content-hash = "74660c8acc8d19ec2c97a82aece95b787012c006c7d34f32079ffa48a42f9bbc"
+content-hash = "9904ea9c1127090503b0d533633a4a1afd67bf82f499c51086559b278d958b57"
