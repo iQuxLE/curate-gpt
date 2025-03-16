@@ -40,9 +40,8 @@ from curategpt.evaluation.splitter import stratify_collection
 from curategpt.extract import AnnotatedObject
 from curategpt.extract.basic_extractor import BasicExtractor
 from curategpt.store import Metadata, get_store
-from curategpt.store.enhanced_chromadb_adapter import BatchEnhancementProcessor
+from curategpt.store.batch_processor import BatchEnhancementProcessor
 from curategpt.store.schema_proxy import SchemaProxy
-from curategpt.utils.hpo_clustering import HPOClustering
 from curategpt.utils.vectordb_operations import match_collections
 from curategpt.wrappers import BaseWrapper, get_wrapper
 from curategpt.wrappers.literature.pubmed_wrapper import PubmedWrapper
@@ -2667,7 +2666,6 @@ def index_restricted_ontology(
     "--cache",
     default="batch_output",
     help="Cache directory for openai responses in jsonl format"
-
 )
 def index_with_batch(
         db_path: Optional[Path],
