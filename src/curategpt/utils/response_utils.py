@@ -1,5 +1,3 @@
-import json
-import re
 from pathlib import Path
 from typing import Dict, Optional, List
 
@@ -73,35 +71,3 @@ def load_cache(
                     continue
 
     return enhanced_cache
-
-
-def load_existing_batch_outputs(self, output_dir: Path) -> int:
-    """
-    Parse existing batch_X_output.jsonl files to find the highest batch index
-    and populate self.enhanced_cache with any successfully processed term IDs.
-    Returns the highest batch index found (or -1 if none).
-    """
-    pattern = re.compile(r"batch_(\d+)_output\.jsonl")
-    highest_batch_index = -1
-
-    for file_path in output_dir.glob("batch_*_output.jsonl"):
-        match = pattern.match(file_path.name)
-        if not match:
-            continue
-
-        batch_index = int(match.group(1))
-        if batch_index > highest_batch_index:
-            highest_batch_index = batch_index
-
-        with file_path.open("r") as f:
-            for line in f:
-                data = json.loads(line)
-                if "error" not in data:
-                    term_id = data.get("custom_id")
-                    response_body = data.get("response", {}).get("body", {})
-                    choices = response_body.get("choices", [])
-                    if term_id and choices:
-                        content = choices[0].get("message", {}).get("content", "")
-                        self.enhanced_cache[term_id] = content
-
-    return highest_batch_index

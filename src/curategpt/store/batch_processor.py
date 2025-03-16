@@ -2,12 +2,13 @@
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Dict, Iterable, List, Iterator
 
 from openai import OpenAI
-from curategpt.utils.custom_definition_utils import load_cache, load_existing_batch_outputs
+from curategpt.utils.response_utils import load_cache
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +161,7 @@ Provide the enhanced description only, without any additional formatting or meta
             Iterator of enhanced ontology objects
         """
         output_dir.mkdir(parents=True, exist_ok=True)
-        highest_existing_batch = load_existing_batch_outputs(output_dir)
+        highest_existing_batch = self.load_existing_batch_outputs(output_dir)
         batch_count = highest_existing_batch + 1
         batch = []
 
@@ -294,3 +295,34 @@ Provide the enhanced description only, without any additional formatting or meta
                                 json_record = json.dumps({"term_id": term_id, "enhanced_description": content})
                                 f.write(json_record + "\n")
                                 logger.info(f"Written enhanced description for {term_id} to JSONL file")
+
+    def load_existing_batch_outputs(self, output_dir: Path) -> int:
+        """
+        Parse existing batch_X_output.jsonl files to find the highest batch index
+        and populate self.enhanced_cache with any successfully processed term IDs.
+        Returns the highest batch index found (or -1 if none).
+        """
+        pattern = re.compile(r"batch_(\d+)_output\.jsonl")
+        highest_batch_index = -1
+
+        for file_path in output_dir.glob("batch_*_output.jsonl"):
+            match = pattern.match(file_path.name)
+            if not match:
+                continue
+
+            batch_index = int(match.group(1))
+            if batch_index > highest_batch_index:
+                highest_batch_index = batch_index
+
+            with file_path.open("r") as f:
+                for line in f:
+                    data = json.loads(line)
+                    if "error" not in data:
+                        term_id = data.get("custom_id")
+                        response_body = data.get("response", {}).get("body", {})
+                        choices = response_body.get("choices", [])
+                        if term_id and choices:
+                            content = choices[0].get("message", {}).get("content", "")
+                            self.enhanced_cache[term_id] = content
+
+        return highest_batch_index
