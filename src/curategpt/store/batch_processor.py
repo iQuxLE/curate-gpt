@@ -37,7 +37,7 @@ class BatchEnhancementProcessor:
         self.batch_size = batch_size
         self.model = model
         self.completion_window = completion_window
-        self.client = OpenAI()
+        self.client = OpenAI(base_url="https://api.cborg.lbl.gov")
         self.enhanced_cache = {}
         self.cache_dir = Path(cache_dir)
         if self.cache_dir:
