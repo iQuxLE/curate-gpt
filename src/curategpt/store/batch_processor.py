@@ -18,7 +18,7 @@ class BatchEnhancementProcessor:
     def __init__(
             self,
             batch_size: int = 1000,
-            model: str = "gpt-4o",
+            model: str = "openai/gpt-4o",
             completion_window: str = "24h",
             cache_dir: Path = "batch_output",
             file_limit: int = None,

@@ -2638,7 +2638,7 @@ def index_restricted_ontology(
 )
 @click.option(
     "--openai-model",
-    default="gpt-4o",
+    default="openai/gpt-4o",
     help="OpenAI model to use for enhancement"
 )
 @click.option(
