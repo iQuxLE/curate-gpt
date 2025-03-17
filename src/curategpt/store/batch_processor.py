@@ -48,13 +48,12 @@ class BatchEnhancementProcessor:
                 line_limit=line_limit,
                 specific_file=specific_file
             )
-
+        print(os.environ.get("OPENAI_API_KEY"))
+        print(os.environ.get("CBORG_API_KEY"))
+        print(os.environ.get("OPENAI_BASE_URL"))
+        print(self.client.api_key)
+        print(self.client.base_url)
         if not os.environ.get("OPENAI_API_KEY"):
-            print(os.environ.get("OPENAI_API_KEY"))
-            print(os.environ.get("CBORG_API_KEY"))
-            print(os.environ.get("OPENAI_BASE_URL"))
-            print(self.client.api_key)
-            print(self.client.base_url)
             raise ValueError("OPENAI_API_KEY environment variable must be set")
 
 
