@@ -226,10 +226,13 @@ Provide the enhanced description only, without any additional formatting or meta
             output_dir: Directory to store batch files and results
             batch_num: Batch number for file naming
         """
+        requests_dir = output_dir.parent / "batch_requests"
+        requests_dir.mkdir(parents=True, exist_ok=True)
+
         if not hp_terms_batch:
             return
 
-        batch_file = output_dir / f"batch_{batch_num}.jsonl"
+        batch_file = requests_dir / f"batch_{batch_num}.jsonl"
         logger.info(f"Processing batch {batch_num} with {len(hp_terms_batch)} HP terms")
 
         self.prepare_batch_file(hp_terms_batch, str(batch_file))
