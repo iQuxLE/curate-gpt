@@ -41,6 +41,7 @@ from curategpt.extract import AnnotatedObject
 from curategpt.extract.basic_extractor import BasicExtractor
 from curategpt.store import Metadata, get_store
 from curategpt.store.batch_processor import BatchEnhancementProcessor
+from curategpt.store.direct_processor import CborgAsyncEnhancementProcessor
 from curategpt.store.schema_proxy import SchemaProxy
 from curategpt.utils.vectordb_operations import match_collections
 from curategpt.wrappers import BaseWrapper, get_wrapper
@@ -2667,6 +2668,28 @@ def index_restricted_ontology(
     default="batch_output",
     help="Cache directory for openai responses in jsonl format"
 )
+@click.option(
+    "--base-url",
+    default="https://api.cborg.lbl.gov",
+    help="Base URL for the OpenAI client (or proxy)")
+@click.option(
+    "--cborg-async",
+    is_flag=True,
+    default=False,
+    help="Use CBOR for API calls and async processing instead of batch API use"
+)
+@click.option(
+    "--test-mode",
+    is_flag=True,
+    default=False,
+    help="Run in test mode with only a few high-numbered HP terms"
+)
+@click.option(
+    "--max-concurrency",
+    default=20,
+    type=int,
+    help="Maxmum number of concurrent API requests (for CBORG async mode)"
+)
 def index_with_batch(
         db_path: Optional[Path],
         collection: str,
@@ -2679,7 +2702,11 @@ def index_with_batch(
         database_type: str,
         restrict: bool,
         completion_window: str,
-        cache: str
+        cache: str,
+        base_url: str,
+        cborg_async: bool,
+        test_mode: bool,
+        max_concurrency: int,
 ):
     """
     Index an ontology with enhanced descriptions using OpenAI's Batch API.
@@ -2694,8 +2721,7 @@ def index_with_batch(
         # Use a specific OpenAI model and embedding model
         curate-index index-with-batch --openai-model o1 --model large3 --collection hp_custom
     """
-    # Check for OpenAI API key
-    if not os.environ.get("OPENAI_API_KEY"):
+    if not os.environ.get("CBORG_API_KEY"):
         click.echo("ERROR: OPENAI_API_KEY environment variable is required for batch API.")
         click.echo("Set this environment variable before running this command:")
         click.echo("  export OPENAI_API_KEY=your-key-here")
@@ -2718,6 +2744,10 @@ def index_with_batch(
     click.echo(f"Batch directory: {batch_output_dir}")
     click.echo(f"Database type: {database_type}")
     click.echo(f"Completion window: {completion_window}")
+    click.echo(f"Cache path: {cache}")
+    click.echo(f"Async procssing via CBORG: {cborg_async}")
+    click.echo(f"Test mode: {test_mode}")
+    click.echo(f"Max concurrency: {max_concurrency}")
 
     try:
         adapter = get_store(name=database_type, path=str(db_path))
@@ -2726,12 +2756,20 @@ def index_with_batch(
         oak_adapter = get_adapter(ontology)
         view = OntologyWrapper(oak_adapter=oak_adapter)
 
-        processor = BatchEnhancementProcessor(
-            batch_size=batch_size,
-            model=openai_model,
-            completion_window=completion_window,
-            cache_dir=Path(cache)
-        )
+        if not cborg_async:
+            processor = BatchEnhancementProcessor(
+                batch_size=batch_size,
+                model=openai_model,
+                completion_window=completion_window,
+                cache_dir=Path(cache)
+            )
+        if cborg_async:
+            processor = CborgAsyncEnhancementProcessor(
+                batch_size=1000,
+                model="openai/gpt-4o",
+                cache_dir=Path("batch_output"),
+                max_concurrency=5
+            )
 
         def text_lookup(obj):
             """Custom text extraction function that combines specified fields and uses enhanced description."""
@@ -2770,7 +2808,31 @@ def index_with_batch(
         click.echo(f"Processing terms with batch API (this may take a while)...")
 
         start_time = time.time()
-        if restrict:
+
+        # Filter for a small set of high-numbered HP terms
+        if test_mode:
+            click.echo(f"Running in test mode with high-numbered HP terms...")
+            high_hp_terms = []
+
+            filtered_objs = list(view.filtered_o() if restrict else view.objects())
+
+            for obj in filtered_objs:
+                term_id = obj.get("original_id", "")
+                if term_id.startswith("HP:") and term_id > "HP:0009550":
+                    high_hp_terms.append(obj)
+                    if len(high_hp_terms) >= 12:
+                        break
+            click.echo(f"{high_hp_terms}")
+
+            if not high_hp_terms:
+                click.echo("No high-numbered HP terms found. Using the first 10 HP terms instead.")
+                high_hp_terms = [obj for obj in filtered_objs if obj.get("original_id", "").startswith("HP:")][:10]
+
+            click.echo(
+                f"Testing with {len(high_hp_terms)} HP terms: {[obj.get('original_id') for obj in high_hp_terms]}")
+            enhanced_objects = processor.process_ontology_in_batches(high_hp_terms, batch_output_dir)
+
+        elif restrict:
             click.echo(f"Using restricted set (HP terms only)...")
             enhanced_objects = processor.process_ontology_in_batches(
                 view.filtered_o(),
