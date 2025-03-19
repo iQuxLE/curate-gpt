@@ -2727,10 +2727,10 @@ def index_with_batch(
         # Use a specific OpenAI model and embedding model
         curate-index index-with-batch --openai-model o1 --model large3 --collection hp_custom
     """
-    if not os.environ.get("CBORG_API_KEY") or cborg_api_key:
-        import dotenv
-        dotenv.load_dotenv()
-        cborg_api_key = os.environ.get("CBORG_API_KEY")
+    # if not os.environ.get("CBORG_API_KEY") or cborg_api_key:
+    #     import dotenv
+    #     dotenv.load_dotenv()
+    #     cborg_api_key = os.environ.get("CBORG_API_KEY")
 
     fields_list = [field.strip() for field in index_fields.split(',') if field.strip()]
     include_aliases = "aliases" in fields_list
@@ -2768,7 +2768,8 @@ def index_with_batch(
                 completion_window=completion_window,
                 cache_dir=Path(cache)
             )
-        if cborg_async:
+        print(cborg_api_key)
+        if cborg_async and cborg_api_key:
             processor = CborgAsyncEnhancementProcessor(
                 cborg_api_key=cborg_api_key,
                 batch_size=1000,
