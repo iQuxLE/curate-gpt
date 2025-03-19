@@ -42,7 +42,6 @@ class CborgAsyncEnhancementProcessor:
         self.batch_size = batch_size
         self.model = model
         self.max_concurrency = max_concurrency
-        os.environ["CBORG_API_KEY"] = "sk-bNybuZ0BDK4QyXzNngdlEg"
 
         self.client = OpenAI(
             api_key=os.environ.get("CBORG_API_KEY"),
