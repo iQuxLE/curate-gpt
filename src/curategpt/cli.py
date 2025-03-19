@@ -2723,7 +2723,7 @@ def index_with_batch(
     """
     if not os.environ.get("CBORG_API_KEY"):
         import dotenv
-        load_dotenv()
+        dotenv.load_dotenv()
 
     fields_list = [field.strip() for field in index_fields.split(',') if field.strip()]
     include_aliases = "aliases" in fields_list
