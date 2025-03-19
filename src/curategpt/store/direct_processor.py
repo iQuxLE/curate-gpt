@@ -66,9 +66,9 @@ class CborgAsyncEnhancementProcessor:
                 specific_file=specific_file
             )
 
-        # Validate API key
-        if not os.environ.get("CBORG_API_KEY"):
-            raise ValueError("Either CBORG_API_KEY or OPENAI_API_KEY environment variable must be set")
+        # # Validate API key
+        # if not os.environ.get("CBORG_API_KEY"):
+        #     raise ValueError("Either CBORG_API_KEY or OPENAI_API_KEY environment variable must be set")
 
     def _create_enhancement_prompt(
             self,
