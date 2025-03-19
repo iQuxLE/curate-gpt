@@ -2722,10 +2722,8 @@ def index_with_batch(
         curate-index index-with-batch --openai-model o1 --model large3 --collection hp_custom
     """
     if not os.environ.get("CBORG_API_KEY"):
-        click.echo("ERROR: OPENAI_API_KEY environment variable is required for batch API.")
-        click.echo("Set this environment variable before running this command:")
-        click.echo("  export OPENAI_API_KEY=your-key-here")
-        sys.exit(1)
+        import dotenv
+        load_dotenv()
 
     fields_list = [field.strip() for field in index_fields.split(',') if field.strip()]
     include_aliases = "aliases" in fields_list
