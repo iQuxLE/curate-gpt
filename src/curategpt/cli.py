@@ -2690,6 +2690,11 @@ def index_restricted_ontology(
     type=int,
     help="Maxmum number of concurrent API requests (for CBORG async mode)"
 )
+@click.option(
+    "--cborg-api-key",
+    type=str,
+    help="CBORG API key"
+)
 def index_with_batch(
         db_path: Optional[Path],
         collection: str,
@@ -2707,6 +2712,7 @@ def index_with_batch(
         cborg_async: bool,
         test_mode: bool,
         max_concurrency: int,
+        cborg_api_key: str
 ):
     """
     Index an ontology with enhanced descriptions using OpenAI's Batch API.
@@ -2721,9 +2727,10 @@ def index_with_batch(
         # Use a specific OpenAI model and embedding model
         curate-index index-with-batch --openai-model o1 --model large3 --collection hp_custom
     """
-    if not os.environ.get("CBORG_API_KEY"):
+    if not os.environ.get("CBORG_API_KEY") or cborg_api_key:
         import dotenv
         dotenv.load_dotenv()
+        cborg_api_key = os.environ.get("CBORG_API_KEY")
 
     fields_list = [field.strip() for field in index_fields.split(',') if field.strip()]
     include_aliases = "aliases" in fields_list
@@ -2763,6 +2770,7 @@ def index_with_batch(
             )
         if cborg_async:
             processor = CborgAsyncEnhancementProcessor(
+                cborg_api_key=cborg_api_key,
                 batch_size=1000,
                 model="openai/gpt-4o",
                 cache_dir=Path("batch_output"),

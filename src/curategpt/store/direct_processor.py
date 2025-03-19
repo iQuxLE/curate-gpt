@@ -25,7 +25,8 @@ class CborgAsyncEnhancementProcessor:
             file_limit: int = None,
             line_limit: int = None,
             specific_file: Path = None,
-            max_concurrency: int = 20
+            max_concurrency: int = 20,
+            cborg_api_key=None,
     ):
         """
         Initialize the direct processor.
@@ -42,14 +43,15 @@ class CborgAsyncEnhancementProcessor:
         self.batch_size = batch_size
         self.model = model
         self.max_concurrency = max_concurrency
+        self.cborg_api_key = cborg_api_key
 
         self.client = OpenAI(
-            api_key=os.environ.get("CBORG_API_KEY"),
+            api_key=cborg_api_key,
             base_url="https://api.cborg.lbl.gov/v1"
         )
 
         self.async_client = AsyncOpenAI(
-            api_key=os.environ.get("CBORG_API_KEY"),
+            api_key=cborg_api_key,
             base_url="https://api.cborg.lbl.gov/v1"
         )
 
