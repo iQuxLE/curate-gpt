@@ -76,6 +76,8 @@ class OntologyWrapper(BaseWrapper):
         # Get the allowed HP IDs from HPOClustering.
         hpo_cluster = HPOClustering()
         allowed_ids = set(hpo_cluster.all_children)
+        allowed_ids.add("HP:0025742")
+        allowed_ids.add("HP:0000007")
 
         # Instead of processing all entities, filter them first.
         all_entities = list(adapter.entities())
