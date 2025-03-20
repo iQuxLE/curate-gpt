@@ -78,6 +78,10 @@ class OntologyWrapper(BaseWrapper):
         allowed_ids = set(hpo_cluster.all_children)
         allowed_ids.add("HP:0025742")
         allowed_ids.add("HP:0000007")
+        allowed_ids.add("HP:0003581")
+        allowed_ids.add("HP:0034720")
+        allowed_ids.add("HP:0003621")
+        allowed_ids.add("HP:0000006")
 
         # Instead of processing all entities, filter them first.
         all_entities = list(adapter.entities())
